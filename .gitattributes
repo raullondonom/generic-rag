@@ -1,0 +1,5 @@
+# Finales de línea LF en el repositorio (Docker, shell y Python se ejecutan en Linux)
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.pdf binary

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RAG Documental</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <aside id="sidebar">
+    <h1>RAG Documental</h1>
+    <p class="muted">Responde solo con tus documentos y Confluence.</p>
+
+    <label for="provider">Proveedor de IA</label>
+    <select id="provider"></select>
+    <p id="model" class="muted small"></p>
+
+    <h2>Índice</h2>
+    <div id="status" class="small">Cargando…</div>
+
+    <div class="buttons">
+      <button data-source="folder">Reindexar carpeta</button>
+      <button data-source="confluence">Sincronizar Confluence</button>
+    </div>
+    <p id="reindex-msg" class="muted small"></p>
+
+    <button id="new-chat" class="secondary">Nueva conversación</button>
+  </aside>
+
+  <main>
+    <div id="messages">
+      <div class="empty">
+        <h2>¿Qué quieres consultar?</h2>
+        <p class="muted">Las respuestas se basan únicamente en los documentos indexados y citan sus fuentes.</p>
+      </div>
+    </div>
+    <form id="form">
+      <textarea id="question" rows="1" placeholder="Escribe tu pregunta… (Enter para enviar, Shift+Enter para salto de línea)" required></textarea>
+      <button type="submit" id="send">Enviar</button>
+    </form>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

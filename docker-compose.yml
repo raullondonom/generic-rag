@@ -1,0 +1,101 @@
+name: genric-rag
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    volumes:
+      - qdrant_data:/qdrant/storage
+    ports:
+      - "127.0.0.1:6333:6333"   # dashboard: http://localhost:6333/dashboard
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama_models:/root/.ollama
+    ports:
+      - "127.0.0.1:11434:11434"
+    environment:
+      OLLAMA_KEEP_ALIVE: 30m
+      # Caché KV cuantizada: reduce a la mitad la VRAM del contexto (necesario con 8 GB)
+      OLLAMA_FLASH_ATTENTION: ${OLLAMA_FLASH_ATTENTION:-1}
+      OLLAMA_KV_CACHE_TYPE: ${OLLAMA_KV_CACHE_TYPE:-q8_0}
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    # GPU NVIDIA: opcional, se activa con docker-compose.gpu.yml (ver COMPOSE_FILE en .env.example)
+
+  # Descarga los modelos (solo la primera vez tarda) y termina.
+  ollama-init:
+    image: ollama/ollama:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - ollama pull ${EMBED_MODEL:-bge-m3} && ollama pull ${OLLAMA_CHAT_MODEL:-qwen3:8b}
+    restart: "no"
+
+  rag-app:
+    build: ./app
+    restart: unless-stopped
+    depends_on:
+      qdrant:
+        condition: service_started
+      ollama-init:
+        condition: service_completed_successfully
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      OLLAMA_URL: http://ollama:11434
+      DOCS_PATH: /data/docs
+      STATE_DIR: /data/state
+      # Secretos: se leen de las variables de entorno del host (o de .env si se definen allí)
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-${GENRIC_RAG_ANTHROPIC_API_KEY:-}}
+      CONFLUENCE_EMAIL: ${CONFLUENCE_EMAIL:-${JIRA_EMAIL:-}}
+      CONFLUENCE_TOKEN: ${CONFLUENCE_TOKEN:-${JIRA_TOKEN:-}}
+    volumes:
+      - ${DOCS_HOST_PATH:-./documentos}:/data/docs:ro
+      - rag_state:/data/state
+    ports:
+      - "127.0.0.1:${APP_PORT:-8000}:8000"
+
+  # Túnel público para pruebas (opcional): docker compose --profile ngrok up -d
+  # Protegido con usuario/contraseña (NGROK_BASIC_AUTH). URL pública: http://localhost:4040
+  ngrok:
+    image: ngrok/ngrok:latest
+    profiles: ["ngrok"]
+    restart: on-failure:3
+    depends_on:
+      - rag-app
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:-}
+      NGROK_BASIC_AUTH: ${NGROK_BASIC_AUTH:-}
+      NGROK_DOMAIN: ${NGROK_DOMAIN:-}
+    entrypoint: ["/bin/sh", "-c"]
+    # Genera la config (panel en 0.0.0.0:4040) y la traffic policy de usuario/contraseña.
+    # Nunca abre el túnel sin protección.
+    command:
+      - |
+        [ -n "$$NGROK_AUTHTOKEN" ] || { echo "ERROR: define la variable NGROK_AUTHTOKEN"; exit 1; }
+        case "$$NGROK_BASIC_AUTH" in
+          *:????????*) ;;
+          *) echo "ERROR: define NGROK_BASIC_AUTH=usuario:contraseña (mínimo 8 caracteres) en .env"; exit 1 ;;
+        esac
+        printf 'version: 3\nagent:\n  web_addr: 0.0.0.0:4040\n' > /tmp/ngrok.yml
+        printf 'on_http_request:\n  - actions:\n      - type: basic-auth\n        config:\n          credentials:\n            - "%s"\n' "$$NGROK_BASIC_AUTH" > /tmp/policy.yml
+        exec ngrok http rag-app:8000 --config /tmp/ngrok.yml --traffic-policy-file /tmp/policy.yml $${NGROK_DOMAIN:+--url $$NGROK_DOMAIN} --log stdout
+    ports:
+      - "127.0.0.1:4040:4040"
+
+volumes:
+  qdrant_data:
+  ollama_models:
+  rag_state:

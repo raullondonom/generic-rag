@@ -1,0 +1,12 @@
+# Activa la GPU NVIDIA para Ollama. Se combina con docker-compose.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+# o, de forma permanente, con COMPOSE_FILE en .env (ver .env.example).
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
