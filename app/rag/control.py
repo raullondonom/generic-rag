@@ -109,16 +109,24 @@ class ControlFolder:
     def ocr_sidecar_suffix(self) -> str:
         return self.config.get("ocr_sidecar_suffix", "")
 
-    def assistant_notes(self, max_chars: int = 6000) -> str:
-        """Instructions for the assistant from the collection's administrator (assistant_notes_file)."""
-        name = self.config.get("assistant_notes_file")
+    def _notes(self, key: str, max_chars: int) -> str:
+        name = self.config.get(key)
         if not name:
             return ""
         path = (self.path / name).resolve()
         if not path.is_relative_to(self.path.resolve()) or not path.is_file():
-            log.warning("assistant_notes_file not found in the control folder: %s", name)
+            log.warning("%s not found in the control folder: %s", key, name)
             return ""
         return path.read_text(encoding="utf-8", errors="replace").strip()[:max_chars]
+
+    def assistant_notes(self, max_chars: int = 6000) -> str:
+        """Instructions for the assistant from the collection's administrator (assistant_notes_file)."""
+        return self._notes("assistant_notes_file", max_chars)
+
+    def search_notes(self, max_chars: int = 3000) -> str:
+        """How to read the questions of this collection and what to look for besides the topic
+        (search_notes_file), for the search preparation step."""
+        return self._notes("search_notes_file", max_chars)
 
     @property
     def excluded_dirs(self) -> set[str]:

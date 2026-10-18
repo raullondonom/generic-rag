@@ -58,14 +58,27 @@ def group_hits(hits: list[Hit], language: str = "en") -> list[dict]:
     return list(docs.values())
 
 
+def _optional(source, error: str) -> str:
+    """Text from an optional collection setting (notes, description); "" if missing or broken."""
+    if not source:
+        return ""
+    try:
+        return source() or ""
+    except Exception:  # noqa: BLE001 - these texts are optional
+        log.exception(error)
+        return ""
+
+
 class ChatService:
     def __init__(self, settings: Settings, embedder: Embedder, store: VectorStore, llms: dict[str, LLM],
-                 conversations, redactor: Redactor | None = None, notes=None, describe=None):
+                 conversations, redactor: Redactor | None = None, notes=None, describe=None, search_notes=None):
         """`notes`: callable returning the collection administrator's instructions (control folder).
-        `describe`: callable returning a one-line description of the collection, used to prepare searches."""
+        `describe`: callable returning a one-line description of the collection, used to prepare searches.
+        `search_notes`: callable returning how to read the collection's questions, for preparing searches."""
         self.settings = settings
         self.notes = notes
         self.describe = describe
+        self.search_notes = search_notes
         self.language = settings.language
         self.embedder = embedder
         self.store = store
@@ -95,15 +108,11 @@ class ChatService:
             return query_prep.from_model(None, question, 0)
         max_keywords = self.settings.search_keywords_max if self.settings.keyword_search else 0
         convo = "\n".join(f"{m['role']}: {m['content'][:1500]}" for m in history[-4:])
-        collection = ""
-        if self.describe:
-            try:
-                collection = self.describe() or ""
-            except Exception:  # noqa: BLE001 - the description is optional
-                log.exception("Could not describe the collection")
+        collection = _optional(self.describe, "Could not describe the collection")
+        guidance = await asyncio.to_thread(_optional, self.search_notes, "Could not read the search notes")
         try:
             data = await llm.complete_json(
-                prepare_prompt(self.language, collection, self.settings.search_queries_max, max_keywords),
+                prepare_prompt(self.language, collection, self.settings.search_queries_max, max_keywords, guidance),
                 [{"role": "user", "content": build_prepare_message(convo, question, self.language, context)}],
                 PREPARE_SCHEMA,
             )
@@ -162,12 +171,7 @@ class ChatService:
 
     def system(self) -> str:
         """System prompt plus the notes of the collection's administrator, if any (trusted operator text)."""
-        notes = ""
-        if self.notes:
-            try:
-                notes = self.notes() or ""
-            except Exception:  # noqa: BLE001 - notes are optional
-                log.exception("Could not read the assistant notes")
+        notes = _optional(self.notes, "Could not read the assistant notes")
         base = system_prompt(self.language)
         return f"{base}\n\n{t(self.language, 'corpus_notes')}\n{notes}" if notes else base
 

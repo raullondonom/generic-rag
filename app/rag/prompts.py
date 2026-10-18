@@ -121,12 +121,14 @@ _LABELS = {
            "interpretation": "Automatic interpretation of the question (spelling fixed and rewritten; check it)",
            "searches": "Searches run in the documents", "missing": "Data that may be missing",
            "keywords": "Keywords searched literally",
+           "guidance": "Guidance of this collection for preparing the search (use it for the queries)",
            "context": "Context indicated by the user"},
     "es": {"documents": "DOCUMENTOS", "document": "Documento", "question": "Pregunta del usuario (original)",
            "conversation": "Conversación", "last": "Última pregunta",
            "interpretation": "Interpretación automática de la pregunta (ortografía corregida y reformulada; revísala)",
            "searches": "Búsquedas realizadas en los documentos", "missing": "Datos que podrían faltar",
            "keywords": "Palabras clave buscadas literalmente",
+           "guidance": "Indicaciones de esta colección para preparar la búsqueda (úsalas en las consultas)",
            "context": "Contexto indicado por el usuario"},
 }
 
@@ -135,9 +137,13 @@ def system_prompt(language: str) -> str:
     return SYSTEM_PROMPTS[normalize(language)]
 
 
-def prepare_prompt(language: str, collection: str, max_queries: int, max_keywords: int = 0) -> str:
-    return PREPARE_PROMPTS[normalize(language)].format(collection=collection, max_queries=max_queries,
-                                                       max_keywords=max_keywords)
+def prepare_prompt(language: str, collection: str, max_queries: int, max_keywords: int = 0,
+                   guidance: str = "") -> str:
+    """`guidance`: the collection's search notes (how to read its questions, what to look for besides
+    the topic), trusted operator text."""
+    prompt = PREPARE_PROMPTS[normalize(language)].format(collection=collection, max_queries=max_queries,
+                                                         max_keywords=max_keywords)
+    return f"{prompt}\n\n{labels(language)['guidance']}:\n{guidance}" if guidance else prompt
 
 
 def labels(language: str) -> dict[str, str]:

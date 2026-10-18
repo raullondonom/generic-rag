@@ -62,7 +62,8 @@ class Services:
         self.feedback = FeedbackStore(self.db)
         self.control = ControlStore(self.db)
         self.chat = ChatService(settings, self.embedder, self.store, build_llms(settings, self.spend),
-                                self.conversations, notes=self.assistant_notes, describe=self.describe_collection)
+                                self.conversations, notes=self.assistant_notes, describe=self.describe_collection,
+                                search_notes=self.search_notes)
         self.chat.default_override = self.db.get_setting(DEFAULT_PROVIDER_KEY)
         self.scheduler = BackgroundScheduler(timezone="UTC")
         self._field_values: dict[str, tuple[float, list[str]]] = {}
@@ -137,6 +138,11 @@ class Services:
     def describe_collection() -> str:
         brand = branding.load(settings.docs_path, settings.control_dir, settings.language)
         return f"{brand['name']}: {brand['tagline']}"
+
+    @staticmethod
+    def search_notes() -> str:
+        folder = ControlFolder.load(settings.docs_path, settings.control_dir)
+        return folder.search_notes() if folder else ""
 
     @staticmethod
     def assistant_notes() -> str:

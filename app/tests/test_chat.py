@@ -83,6 +83,7 @@ class FakeLLM:
         yield "[1]"
 
     async def complete_json(self, system, messages, schema):
+        self.prepare_systems = [*getattr(self, "prepare_systems", []), system]
         self.rewrites.append(messages)
         if isinstance(self.prepared, Exception):
             raise self.prepared
@@ -154,6 +155,17 @@ def test_collection_notes_are_added_to_the_system_prompt():
     service.notes = lambda: ""
     run(service, "How is it deployed?")
     assert t("en", "corpus_notes") not in llm.calls[1][0]
+
+
+def test_search_notes_guide_the_preparation_only():
+    service, llm, _ = make([hit(0.9)])
+    service.search_notes = lambda: "- Also look for the deadline to file a claim."
+    run(service, "How is it deployed?")
+    assert llm.prepare_systems[-1].endswith("- Also look for the deadline to file a claim.")
+    assert "deadline to file a claim" not in llm.calls[-1][0]
+    service.search_notes = lambda: (_ for _ in ()).throw(OSError("gone"))
+    run(service, "How is it deployed?")
+    assert "deadline" not in llm.prepare_systems[-1]
 
 
 def test_greeting_short_circuit():
