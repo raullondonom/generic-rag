@@ -83,6 +83,7 @@ select, textarea {
 /* ---------------------------------------------------------- layout */
 .app {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto 1fr;
   height: 100vh;
   height: 100dvh;
@@ -182,10 +183,13 @@ select, textarea {
 .bubble h1, .bubble h2, .bubble h3, .bubble h4 { font-size: 1rem; margin: 12px 0 6px; text-transform: none; letter-spacing: 0; color: var(--text); }
 .bubble ul, .bubble ol { padding-left: 22px; margin: 6px 0; }
 .bubble .answer { font-size: 1.05rem; line-height: 1.45; }
-.bubble .label, .bubble .basis summary { display: block; font-size: 0.75rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--accent); margin-bottom: 2px; }
+.bubble .label { display: flex; align-items: center; gap: 6px; font-size: 0.75rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--accent); margin-bottom: 2px; }
+.bubble .icon { font-size: 1.1rem; line-height: 1; letter-spacing: 0; }
 .bubble .basis { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); font-size: 0.92rem; color: var(--muted); }
 .bubble .basis summary { cursor: pointer; min-height: 32px; display: flex; align-items: center; }
+.bubble .basis summary .label { margin: 0; }
 .bubble .basis ul, .bubble .basis ol { margin: 4px 0; }
+.bubble .conclusion { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); font-size: 0.95rem; }
 .cite { color: var(--accent); font-weight: 600; font-size: 0.85em; }
 .meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; font-size: 0.78rem; color: var(--muted); margin-top: 4px; }
 .meta button { min-height: 32px; padding: 2px 8px; background: transparent; color: var(--muted); border: 1px solid var(--border); font-size: 0.78rem; }

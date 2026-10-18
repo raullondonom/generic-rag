@@ -95,8 +95,10 @@ def test_system_prompt_mentions_confluence_only_when_enabled():
         assert "<" not in system_prompt(lang, confluence=True)
 
 
-def test_system_prompt_asks_for_the_answer_and_basis_format():
+def test_system_prompt_asks_for_answer_basis_and_conclusion_with_icons():
     from rag.prompts import system_prompt
 
-    assert "**Answer:**" in system_prompt("en") and "**Basis:**" in system_prompt("en")
-    assert "**Respuesta:**" in system_prompt("es") and "**Sustento:**" in system_prompt("es")
+    for lang, labels_ in (("en", ("Answer", "Basis", "Conclusion")), ("es", ("Respuesta", "Sustento", "Conclusión"))):
+        prompt = system_prompt(lang)
+        for icon, label in zip(("💡", "⚖️", "✅"), labels_):
+            assert f"{icon} **{label}:**" in prompt

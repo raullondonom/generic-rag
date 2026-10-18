@@ -87,7 +87,7 @@ class Settings(BaseSettings):
     context_model: str = ""  # empty = ANTHROPIC_FAST_MODEL
     context_workers: int = 8
     chunk_overlap: int = 400
-    history_turns: int = 6
+    history_turns: int = 0  # 0 = every question is an independent query
 
     # Statuses (lowercase, from the source registry) left out of the search, e.g. repealed documents
     exclude_statuses: str = "repealed,derogada,derogado"

@@ -205,7 +205,7 @@ def test_done_event_carries_the_answer_id_for_rating():
 
 
 def test_follow_up_uses_saved_history_and_rewrites():
-    service, llm, convs = make([hit(0.9)])
+    service, llm, convs = make([hit(0.9)], settings_kwargs={"history_turns": 6})
     cid = meta(run(service, "How is it deployed?"))["conversation_id"]
     events = run(service, "and in production?", cid)
     assert meta(events)["conversation_id"] == cid
@@ -216,6 +216,15 @@ def test_follow_up_uses_saved_history_and_rewrites():
     assert len(llm.rewrites) == 2
     assert "How is it deployed?" in llm.rewrites[1][0]["content"]
     assert len(convs.data[cid]) == 4
+
+
+def test_every_question_is_independent_by_default():
+    service, llm, convs = make([hit(0.9)])
+    cid = meta(run(service, "How is it deployed?"))["conversation_id"]
+    run(service, "and in production?", cid)
+    assert [m["role"] for m in sent_messages(llm)] == ["user"]
+    assert "How is it deployed?" not in llm.rewrites[1][0]["content"]
+    assert len(convs.data[cid]) == 4  # still saved for the conversation list
 
 
 def test_search_is_prepared_and_the_answer_sees_the_interpretation():
@@ -359,6 +368,7 @@ def test_failed_answer_is_saved_with_error_and_left_out_of_history():
     assert convs.data[cid][-1]["error"] == "RuntimeError: cut off"
     assert convs.data[cid][-1]["content"] == "answer "
     llm.fail = False
+    service.settings.history_turns = 6
     run(service, "second", cid)
     # The question whose answer failed is not sent as history
     assert [m["role"] for m in sent_messages(llm)] == ["user"]

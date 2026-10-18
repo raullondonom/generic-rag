@@ -213,7 +213,10 @@ class ChatService:
         return chosen
 
     def _load_history(self, conversation_id: str) -> list[dict]:
-        """Only complete question-answer pairs (a question whose answer failed is left out)."""
+        """Only complete question-answer pairs (a question whose answer failed is left out).
+        With HISTORY_TURNS=0 nothing is carried over: every question is an independent query."""
+        if self.settings.history_turns <= 0:
+            return []
         rows = self.conversations.history(conversation_id, 2 * self.settings.history_turns + 1)
         history = []
         for prev, cur in zip(rows, rows[1:]):

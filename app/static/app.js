@@ -153,23 +153,28 @@ function renderMarkdown(md) {
   return out.join("");
 }
 
-// Answers come as "Respuesta: … Sustento: …" (see prompts.py): the answer stands out and the basis
-// folds. Anything else (old messages, guardrails, deviations) is rendered as plain Markdown.
-const ANSWER_RE = /^\s*\**\s*(Respuesta|Answer)\s*:?\s*\**\s*:?\s*/i;
-const BASIS_RE = /(?:^|\n)\s*\**\s*(Sustento|Basis)\s*:?\s*\**\s*:?[ \t]*\n?/i;
+// Answers come as "💡 Respuesta / ⚖️ Sustento / ✅ Conclusión" (see prompts.py): the answer stands out,
+// the basis folds and the conclusion closes. The icon is added here by section, so it always shows.
+// Anything else (old messages, guardrails, deviations) is rendered as plain Markdown.
+const SECTION_RE = /(?:^|\n)[ \t]*(?:[\u{1F4A1}\u2696\u2705]\uFE0F?\s*)?\**\s*(Respuesta|Answer|Sustento|Basis|Conclusi[oó]n|Conclusion)\s*:?\s*\**\s*:?[ \t]*/giu;
+const SECTION_KIND = { respuesta: "answer", answer: "answer", sustento: "basis", basis: "basis",
+  conclusion: "conclusion", "conclusión": "conclusion" };
+const SECTION_ICON = { answer: "💡", basis: "⚖️", conclusion: "✅" };
 
 function renderAnswer(text) {
-  const head = text.match(ANSWER_RE);
-  if (!head) return renderMarkdown(text);
-  const rest = text.slice(head[0].length);
-  const split = rest.match(BASIS_RE);
-  const answer = split ? rest.slice(0, split.index) : rest;
-  let html = `<div class="answer"><span class="label">${escapeHtml(head[1])}</span>${renderMarkdown(answer)}</div>`;
-  if (split) {
-    const label = `${split[1][0].toUpperCase()}${split[1].slice(1).toLowerCase()}`;
-    html += `<details class="basis" open><summary>${escapeHtml(label)}</summary>${renderMarkdown(rest.slice(split.index + split[0].length))}</details>`;
-  }
-  return html;
+  const marks = [...text.matchAll(SECTION_RE)];
+  if (!marks.length || text.slice(0, marks[0].index).trim()) return renderMarkdown(text);
+  const parts = marks.map((m, i) => ({
+    kind: SECTION_KIND[m[1].toLowerCase()],
+    label: m[1][0].toUpperCase() + m[1].slice(1).toLowerCase(),
+    body: text.slice(m.index + m[0].length, i + 1 < marks.length ? marks[i + 1].index : undefined).trim(),
+  }));
+  return parts.map((p) => {
+    const label = `<span class="label"><span class="icon" aria-hidden="true">${SECTION_ICON[p.kind]}</span>${escapeHtml(p.label)}</span>`;
+    const body = renderMarkdown(p.body);
+    if (p.kind === "basis") return `<details class="basis" open><summary>${label}</summary>${body}</details>`;
+    return `<div class="${p.kind}">${label}${body}</div>`;
+  }).join("");
 }
 
 // ------------------------------------------------------------ side panel (mobile)
