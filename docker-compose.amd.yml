@@ -1,0 +1,20 @@
+# Enables the AMD GPU (ROCm) for Ollama. Combined with docker-compose.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.amd.yml up -d
+# or permanently with COMPOSE_FILE in .env (see .env.example).
+# text-embeddings-inference has no ROCm image: the embeddings keep running on the CPU.
+services:
+  ollama:
+    image: ollama/ollama:0.40.5-rocm
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - video
+      # Numeric id of the host "render" group (getent group render); the container has no such name
+      - "${RENDER_GID:-993}"
+    # Passed through only when defined in .env or the shell (an empty HIP_VISIBLE_DEVICES would hide every GPU)
+    environment:
+      # Only needed when ROCm does not support your GPU's architecture, e.g. 12.0.0 for RDNA4 (gfx1200)
+      - HSA_OVERRIDE_GFX_VERSION
+      # Several GPUs (discrete + integrated): index of the one to use
+      - HIP_VISIBLE_DEVICES

@@ -88,6 +88,7 @@ docker compose logs -f ollama-init   # the first start downloads the models; wai
 Optional:
 
 - **NVIDIA GPU**: uncomment `COMPOSE_PATH_SEPARATOR` and `COMPOSE_FILE` in `.env`, set `TEI_GPU_IMAGE` for your GPU architecture, and run `docker compose up -d`.
+- **Automatic GPU detection (Linux)**: run `./scripts/compose.sh up -d` instead of `docker compose up -d`. It uses NVIDIA (`docker-compose.gpu.yml`) if `nvidia-smi` and the NVIDIA runtime work, AMD/ROCm (`docker-compose.amd.yml`) if `/dev/kfd` is accessible, and the CPU otherwise. `GPU=nvidia|amd|none` forces a choice; `./scripts/compose.sh --detect` only prints it. With AMD only Ollama uses the GPU (the embeddings service has no ROCm image and stays on the CPU); with several GPUs set `HIP_VISIBLE_DEVICES` in `.env`.
 - **Claude**: set the API key (see [Secrets](#secrets)). Claude then answers and Ollama is not started. To keep both and choose in the UI: `COMPOSE_PROFILES=ollama,ollama-with-claude` and `OLLAMA_WITH_CLAUDE=true`.
 - **Confluence**: set the `CONFLUENCE_*` variables in `.env` (see below). It syncs once a day (`CONFLUENCE_SYNC_TIME`, 16:00 by default) and on demand from the administration panel.
 - **Only Claude, no local model**: remove `ollama` from `COMPOSE_PROFILES` and leave `OLLAMA_URL` empty.
