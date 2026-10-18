@@ -8,6 +8,7 @@ from ..config import Settings
 from ..embeddings import Embedder
 from ..i18n import t
 from ..redaction import Redactor
+from ..sparse import document_vector
 from ..vectorstore import VectorStore
 from .chunker import chunk_text
 from .contextual import PREVIOUS_CHARS, strip_mark
@@ -80,7 +81,10 @@ class Indexer:
             if not all(notes):
                 version = strip_mark(version)  # retried on the next sync (the notes written are cached)
         vectors = self.embedder.embed_documents(to_embed)
-        self.store.upsert(doc_id, chunks, vectors, payloads)
+        # BM25 of the same text as the embedding (chunk and note): the lexical half of the hybrid search
+        lexical = ([document_vector(text, self.settings.language) for text in to_embed]
+                   if self.settings.sparse_search else None)
+        self.store.upsert(doc_id, chunks, vectors, payloads, sparse=lexical)
         self.state.upsert(doc_id, source=source, title=title, location=location, version=version,
                           status="indexed", chunks=len(chunks), redactions=redactions, container=container)
         log.info("Indexed %s (%d chunks%s)", location, len(chunks),

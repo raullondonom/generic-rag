@@ -22,8 +22,10 @@ def test_query_prefix_for_instruct_models():
 def test_collection_name_depends_on_model():
     a = Settings(_env_file=None, embedding_model="Qwen/Qwen3-Embedding-0.6B")
     b = Settings(_env_file=None, embedding_model="BAAI/bge-m3")
-    assert a.collection_name == "documents__qwen-qwen3-embedding-0-6b"
+    assert a.collection_name == "documents__qwen-qwen3-embedding-0-6b__bm25"
     assert a.collection_name != b.collection_name
+    # Without BM25 the points have no sparse vector: another collection
+    assert Settings(_env_file=None, sparse_search=False).collection_name == "documents__qwen-qwen3-embedding-0-6b"
 
 
 # ---------------------------------------------------------------- prices

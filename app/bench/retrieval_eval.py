@@ -17,7 +17,7 @@ Dataset (YAML), kept with the collection (for example in its control folder):
 An alternative matches a chunk when `title` is part of its document title and every `text` piece is
 in its text (case and accents ignored). Results go to bench/results/.
 
-    docker compose exec rag-app python -m bench.retrieval_eval --dataset /docs/_control/retrieval_eval.yaml
+    docker compose exec rag-app python -m bench.retrieval_eval --dataset /data/docs/_control/retrieval_eval.yaml
 """
 
 from __future__ import annotations

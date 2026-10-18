@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     # Hybrid search: keywords (and their synonyms or official terms) from the preparation step, each one a
     # semantic search restricted to the chunks that contain it (full-text index of Qdrant, in LANGUAGE)
     keyword_search: bool = True
+    # Hybrid search: a BM25 sparse vector per chunk next to its embedding (finds exact terms and codes).
+    # Changing it creates a new collection: everything is indexed again.
+    sparse_search: bool = True
     search_keywords_max: int = 3
     # A keyword found in more than this share of the chunks is too generic to filter and is skipped
     keyword_max_share: float = 0.02
@@ -155,7 +158,8 @@ class Settings(BaseSettings):
     @property
     def collection_name(self) -> str:
         """One collection per embeddings model: changing the model never mixes vectors."""
-        return f"{self.collection_prefix}__{re.sub(r'[^a-z0-9]+', '-', self.embedding_model.lower()).strip('-')}"
+        name = f"{self.collection_prefix}__{re.sub(r'[^a-z0-9]+', '-', self.embedding_model.lower()).strip('-')}"
+        return f"{name}__bm25" if self.sparse_search else name
 
     @property
     def anthropic_enabled(self) -> bool:

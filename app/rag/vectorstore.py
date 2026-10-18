@@ -14,6 +14,18 @@ from .i18n import normalize
 
 log = logging.getLogger(__name__)
 
+SPARSE = "bm25"  # name of the sparse vector of every point
+
+
+def _filter(exclude_statuses: list[str] | None, where: dict[str, str] | None, text: str | None) -> qm.Filter | None:
+    must_not = [qm.FieldCondition(key="status", match=qm.MatchAny(any=list(exclude_statuses)))] \
+        if exclude_statuses else None
+    must = [qm.FieldCondition(key=k, match=qm.MatchValue(value=v)) for k, v in (where or {}).items()]
+    if text:
+        must.append(text_condition(text))
+    return qm.Filter(must=must or None, must_not=must_not) if must or must_not else None
+
+
 # LANGUAGE -> stemmer and stopwords of the full-text index
 TEXT_LANGUAGES = {"en": "english", "es": "spanish"}
 
@@ -41,6 +53,7 @@ class VectorStore:
         self.prefix = settings.collection_prefix
         self.collection = settings.collection_name
         self.language = normalize(settings.language)
+        self.sparse = settings.sparse_search
         self.client = client or QdrantClient(url=settings.qdrant_url, timeout=60)
         self._ready = False
 
@@ -51,6 +64,9 @@ class VectorStore:
             self.client.create_collection(
                 self.collection,
                 vectors_config=qm.VectorParams(size=dim, distance=qm.Distance.COSINE),
+                # BM25: the points carry the term weights, Qdrant applies the IDF of the collection
+                sparse_vectors_config={SPARSE: qm.SparseVectorParams(modifier=qm.Modifier.IDF)}
+                if self.sparse else None,
             )
             for field in ("doc_id", "source", "status"):
                 self.client.create_payload_index(self.collection, field, qm.PayloadSchemaType.KEYWORD)
@@ -72,12 +88,21 @@ class VectorStore:
             log.info("Deleted collections of previous models: %s", ", ".join(dropped))
         return dropped
 
-    def upsert(self, doc_id: str, chunks: list[str], vectors: list[list[float]], payloads: list[dict]) -> None:
+    def upsert(self, doc_id: str, chunks: list[str], vectors: list[list[float]], payloads: list[dict],
+               sparse: list[tuple[list[int], list[float]]] | None = None) -> None:
+        """`sparse`: the BM25 vector (term ids, weights) of every chunk, when the collection has them."""
         self.ensure_collection(len(vectors[0]))
+
+        def vector(i: int, vec: list[float]):
+            if not (self.sparse and sparse):
+                return vec
+            indices, values = sparse[i]
+            return {"": vec, SPARSE: qm.SparseVector(indices=indices, values=values)}
+
         points = [
             qm.PointStruct(
                 id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"{doc_id}#{i}")),
-                vector=vec,
+                vector=vector(i, vec),
                 payload={**meta, "doc_id": doc_id, "chunk_index": i, "text": text},
             )
             for i, (text, vec, meta) in enumerate(zip(chunks, vectors, payloads))
@@ -103,15 +128,19 @@ class VectorStore:
         containing all its words (full-text index)."""
         if not self.exists():
             return []
-        must_not = [qm.FieldCondition(key="status", match=qm.MatchAny(any=list(exclude_statuses)))] \
-            if exclude_statuses else None
-        must = [qm.FieldCondition(key=k, match=qm.MatchValue(value=v)) for k, v in (where or {}).items()]
-        if text:
-            must.append(text_condition(text))
-        must = must or None
-        query_filter = qm.Filter(must=must, must_not=must_not) if must or must_not else None
         result = self.client.query_points(self.collection, query=vector, limit=limit, with_payload=True,
-                                          query_filter=query_filter)
+                                          query_filter=_filter(exclude_statuses, where, text))
+        return [Hit(score=p.score, text=p.payload.get("text", ""), payload=p.payload) for p in result.points]
+
+    def search_sparse(self, query: tuple[list[int], list[float]], limit: int,
+                      exclude_statuses: list[str] | None = None, where: dict[str, str] | None = None) -> list[Hit]:
+        """BM25 search with a query's term vector (scores are BM25, not comparable with cosine)."""
+        indices, values = query
+        if not (self.sparse and indices and self.exists()):
+            return []
+        result = self.client.query_points(self.collection, query=qm.SparseVector(indices=indices, values=values),
+                                          using=SPARSE, limit=limit, with_payload=True,
+                                          query_filter=_filter(exclude_statuses, where, None))
         return [Hit(score=p.score, text=p.payload.get("text", ""), payload=p.payload) for p in result.points]
 
     def ensure_text_index(self) -> None:

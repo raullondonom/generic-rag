@@ -11,7 +11,7 @@ from .config import Settings
 from .embeddings import Embedder
 from .i18n import t
 from .llm.base import LLM
-from . import query_prep
+from . import query_prep, sparse
 from .prompts import PREPARE_SCHEMA, build_prepare_message, build_user_message, prepare_prompt, system_prompt
 from .query_prep import Prepared
 from .redaction import Redactor
@@ -24,6 +24,7 @@ GREETING_RE = re.compile(
     r"gracias|muchas gracias|thanks|thank you|ok|okay|vale)[\s!¡.,]*$",
     re.IGNORECASE,
 )
+BM25_DEPTH = 15  # lexical hits per query that enter the fusion
 SOURCE_FIELDS = ("n", "title", "location", "url", "source", "source_label", "score", "sections",
                  "status", "valid_until", "jurisdiction")
 
@@ -161,9 +162,17 @@ class ChatService:
             vector = vectors[query_prep.query_for_keyword(queries, kw)]
             keyword_results.append(await asyncio.to_thread(self.store.search, vector, candidates, excluded,
                                                            None, kw))
+        # Guardrail: if no semantic search reaches MIN_SCORE, BM25 alone does not call the AI
+        if not any(hits and hits[0].score >= self.settings.min_score for hits in results + keyword_results):
+            return []
+        lexical = []
+        if self.settings.sparse_search:
+            for q in queries:
+                lexical.append(await asyncio.to_thread(self.store.search_sparse,
+                                                       sparse.query_vector(q, self.language), BM25_DEPTH, excluded))
         return query_prep.fuse(results, self.settings.top_k, self.settings.min_score, self.settings.score_margin,
                                self.settings.max_chunks_per_doc, priority=keyword_results,
-                               priority_slots=self.settings.top_k // 2)
+                               priority_slots=self.settings.top_k // 2, rank_only=lexical)
 
     def _load_history(self, conversation_id: str) -> list[dict]:
         """Only complete question-answer pairs (a question whose answer failed is left out)."""

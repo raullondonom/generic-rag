@@ -8,15 +8,16 @@ apscheduler==3.11.3
 pyyaml==6.0.3
 tzdata==2026.5
 
-# Estado (Postgres)
+# State (Postgres)
 psycopg[binary]==3.3.5
 psycopg-pool==3.3.3
 
-# IA y base vectorial
+# AI, vector store and BM25 stemming
 anthropic==1.15.0
 qdrant-client==1.19.1
+snowballstemmer==3.0.1
 
-# Lectores de documentos
+# Document readers
 pymupdf==1.28.2
 python-docx==1.2.0
 python-pptx==1.0.2

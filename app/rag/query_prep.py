@@ -83,30 +83,31 @@ def query_for_keyword(queries: list[str], keyword: str) -> int:
 
 def fuse(result_lists: list[list[Hit]], top_k: int, min_score: float, score_margin: float,
          max_per_doc: int, per_search: int = 1, priority: list[list[Hit]] | None = None,
-         priority_slots: int = 0) -> list[Hit]:
+         priority_slots: int = 0, rank_only: list[list[Hit]] | None = None) -> list[Hit]:
     """Reciprocal rank fusion of several searches, with at most `max_per_doc` chunks per document.
 
     Each search keeps only its hits above max(MIN_SCORE, its best score - SCORE_MARGIN), so a weak
-    query cannot bring noise; a chunk found by several queries ranks higher. First come up to
-    `priority_slots` chunks of the `priority` searches (the keyword ones, most specific first), taken
-    in turns and one per document; then the best `per_search` hits of every other search, so a topic
-    found by a single search is not crowded out by the chunks the other searches share; the rest is
-    filled by fused score.
+    query cannot bring noise; a chunk found by several queries ranks higher. `rank_only` searches
+    (BM25, whose scores are not similarities) count by rank only. First come up to `priority_slots`
+    chunks of the `priority` searches (the keyword ones, most specific first), taken in turns and one
+    per document; then the best `per_search` hits of every other search, so a topic found by a single
+    search is not crowded out by the chunks the other searches share; the rest is filled by fused score.
     """
     scores: dict[tuple, float] = {}
     best: dict[tuple, Hit] = {}
     kept: list[list[tuple]] = []
     priority = priority or []
-    for hits in [*priority, *result_lists]:
+    lists = [(hits, True) for hits in [*priority, *result_lists]] + [(hits, False) for hits in rank_only or []]
+    for hits, by_similarity in lists:
         keys: list[tuple] = []
         if hits:
-            cutoff = max(min_score, hits[0].score - score_margin)
+            cutoff = max(min_score, hits[0].score - score_margin) if by_similarity else float("-inf")
             for rank, hit in enumerate(hits):
                 if hit.score < cutoff:
                     break
                 key = (hit.payload.get("doc_id"), hit.payload.get("chunk_index"))
                 scores[key] = scores.get(key, 0.0) + 1.0 / (RRF_K + rank + 1)
-                if key not in best or hit.score > best[key].score:
+                if key not in best or (by_similarity and hit.score > best[key].score):
                     best[key] = hit
                 keys.append(key)
         kept.append(keys)

@@ -277,7 +277,7 @@ class Capture:
     def delete_doc(self, doc_id):
         pass
 
-    def upsert(self, doc_id, chunks, vectors, payloads):
+    def upsert(self, doc_id, chunks, vectors, payloads, sparse=None):
         self.chunks, self.payloads = chunks, payloads
 
 

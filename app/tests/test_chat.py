@@ -35,6 +35,10 @@ class FakeStore:
             hits = [h for h in hits if text.lower() in h.text.lower()]
         return hits
 
+    def search_sparse(self, query, limit, exclude_statuses=None, where=None):
+        self.sparse_queries = [*getattr(self, "sparse_queries", []), query]
+        return list(reversed(self.hits))  # BM25 scores: not similarities
+
     def count(self):
         return len(self.hits)
 
@@ -287,6 +291,16 @@ def test_boosted_documents_must_compete_with_the_best_plain_hits():
         service.store.search = lambda v, limit, excluded=None, where=None, text=None: boosted if where else plain
         sources = next(d for k, d in run(service, "Opening hours?", context=context) if k == "sources")
         assert ("local.pdf" in [s["title"] for s in sources]) is kept
+
+
+def test_bm25_joins_the_search_but_cannot_call_the_ai_alone():
+    service, llm, _ = make([hit(0.9), hit(0.85, "folder:b.md")])
+    run(service, "How is it deployed?")
+    assert len(service.store.sparse_queries) >= 1
+    service, llm, _ = make([hit(0.2)])
+    events = run(service, "What is the capital of France?")
+    assert "".join(d for k, d in events if k == "token") == t("en", "no_context")
+    assert llm.calls == []
 
 
 def test_admin_choice_overrides_the_default_provider():
