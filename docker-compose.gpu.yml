@@ -1,7 +1,18 @@
-# Activa la GPU NVIDIA para Ollama. Se combina con docker-compose.yml:
+# Enables the NVIDIA GPU for Ollama and for the embeddings. Combined with docker-compose.yml:
 #   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
-# o, de forma permanente, con COMPOSE_FILE en .env (ver .env.example).
+# or permanently with COMPOSE_FILE in .env (see .env.example).
 services:
+  embeddings:
+    # The image depends on the GPU architecture (see TEI_GPU_IMAGE in .env.example)
+    image: ${TEI_GPU_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:89-1.9}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
   ollama:
     deploy:
       resources:

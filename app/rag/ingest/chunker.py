@@ -1,4 +1,4 @@
-"""Troceo recursivo de texto: intenta cortar por títulos, párrafos, líneas, frases y palabras."""
+"""Recursive text splitting: tries to cut at headings, paragraphs, lines, sentences and words."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ def _split(text: str, size: int, separators: list[str]) -> list[str]:
         if sep not in text:
             continue
         pieces = text.split(sep)
-        # Reponer el separador para no perder títulos ni puntuación
+        # Put the separator back so headings and punctuation are not lost
         pieces = [pieces[0]] + [sep.lstrip("\n") + p if sep.startswith("\n#") else p for p in pieces[1:]]
         joiner = "\n" if sep.startswith("\n#") else sep
         out: list[str] = []
@@ -34,12 +34,12 @@ def _split(text: str, size: int, separators: list[str]) -> list[str]:
         if current:
             out.append(current)
         return out
-    # Sin separadores útiles: corte duro
+    # No useful separator: hard cut
     return [text[j:j + size] for j in range(0, len(text), size)]
 
 
 def chunk_text(text: str, size: int = 3000, overlap: int = 400) -> list[str]:
-    """Divide el texto en fragmentos de hasta `size` caracteres con `overlap` de solape."""
+    """Splits the text into chunks of up to `size` characters with `overlap` characters of overlap."""
     text = text.strip()
     if not text:
         return []
@@ -49,7 +49,7 @@ def chunk_text(text: str, size: int = 3000, overlap: int = 400) -> list[str]:
     chunks = [base[0]]
     for prev, cur in zip(base, base[1:]):
         tail = prev[-overlap:]
-        # Empezar el solape en un límite de palabra
+        # Start the overlap at a word boundary
         m = re.search(r"\s", tail)
         tail = tail[m.end():] if m else tail
         chunks.append(f"{tail}\n{cur}" if tail else cur)

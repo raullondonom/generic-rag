@@ -1,15 +1,17 @@
-# Configuración local con secretos: NUNCA se versiona (usar .env.example como plantilla)
+# Local settings with secrets: NEVER committed (use .env.example as the template)
 .env
 .env.*
 !.env.example
 
-# Datos generados
+# Generated data
 data/
+bench/results/
+app/bench/results/
 
-# Documentos a indexar (contenido del usuario); se conserva solo la carpeta
-documentos/*
-!documentos/.gitkeep
-!documentos/ejemplo-*
+# Documents to index (user content); only the folder and the sample are kept
+documents/*
+!documents/.gitkeep
+!documents/example-*
 
 # Python
 __pycache__/
@@ -18,7 +20,7 @@ __pycache__/
 venv/
 .pytest_cache/
 
-# Editores / SO
+# Editors / OS
 .vscode/
 .idea/
 .DS_Store

@@ -4,15 +4,16 @@ from typing import AsyncIterator, Protocol
 
 
 class LLM(Protocol):
-    """Interfaz común. Ningún proveedor recibe herramientas: no pueden buscar en internet."""
+    """Common interface. No provider gets tools: they cannot search the internet."""
 
     name: str
     model: str
+    remote: bool  # True if the text leaves the machine (it is redacted before sending)
 
     def stream(self, system: str, messages: list[dict]) -> AsyncIterator[str]:
-        """Genera la respuesta en streaming (fragmentos de texto)."""
+        """Streams the answer (text fragments)."""
         ...
 
     async def complete(self, system: str, messages: list[dict]) -> str:
-        """Respuesta corta sin streaming (usada para reformular la pregunta)."""
+        """Short answer without streaming (used to rewrite the question)."""
         ...

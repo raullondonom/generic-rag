@@ -1,8 +1,8 @@
-"""Extracción de texto de cualquier formato legible.
+"""Text extraction from any readable format.
 
-Cada lector devuelve una lista de `Section` (texto + ubicación dentro del archivo,
-p. ej. "página 3" u "hoja Ventas"). Los archivos binarios desconocidos lanzan
-`UnsupportedFormat`; los errores de lectura se propagan para registrarlos.
+Each loader returns a list of `Section` (text + location inside the file, e.g. "page 3" or
+"sheet Sales", in the configured language). Unknown binary files raise `UnsupportedFormat`;
+read errors propagate so they can be recorded.
 """
 
 from __future__ import annotations
@@ -21,6 +21,8 @@ from typing import Callable
 from bs4 import BeautifulSoup
 from charset_normalizer import from_bytes
 
+from ..i18n import t
+
 
 @dataclass
 class Section:
@@ -35,10 +37,11 @@ class UnsupportedFormat(Exception):
 @dataclass
 class LoaderOptions:
     ocr_enabled: bool = False
-    ocr_langs: str = "spa+eng"
+    ocr_langs: str = "eng+spa"
+    language: str = "en"
 
 
-# ---------------------------------------------------------------- utilidades
+# ---------------------------------------------------------------- helpers
 
 def decode_bytes(data: bytes) -> str:
     if not data:
@@ -71,11 +74,11 @@ def clean_text(text: str) -> str:
 
 
 def html_to_text(html: str) -> str:
-    """HTML -> texto conservando títulos (#), tablas (celdas con |) y listas (-)."""
+    """HTML -> text keeping headings (#), tables (cells with |) and lists (-)."""
     soup = BeautifulSoup(html, "lxml")
     for tag in soup(["script", "style", "noscript"]):
         tag.decompose()
-    # De dentro hacia fuera para no perder tablas o listas anidadas
+    # Inside out so nested tables or lists are not lost
     for tr in reversed(soup.find_all("tr")):
         cells = [c.get_text(" ", strip=True) for c in tr.find_all(["td", "th"], recursive=False)]
         tr.replace_with(soup.new_string("\n" + " | ".join(cells) + "\n"))
@@ -93,7 +96,7 @@ def html_to_text(html: str) -> str:
 
 
 def table_rows_to_text(rows: list[list[str]]) -> str:
-    """Filas de una tabla -> texto 'Cabecera: valor; ...' (la 1ª fila no vacía es la cabecera)."""
+    """Table rows -> 'Header: value; ...' text (the first non-empty row is the header)."""
     rows = [[str(c).strip() if c is not None else "" for c in r] for r in rows]
     rows = [r for r in rows if any(r)]
     if not rows:
@@ -114,7 +117,7 @@ def ocr_image(image, langs: str) -> str:
     return pytesseract.image_to_string(image, lang=langs)
 
 
-# ---------------------------------------------------------------- lectores
+# ---------------------------------------------------------------- loaders
 
 def load_pdf(path: Path, opts: LoaderOptions) -> list[Section]:
     import fitz  # pymupdf
@@ -130,7 +133,7 @@ def load_pdf(path: Path, opts: LoaderOptions) -> list[Section]:
                 img = Image.open(io.BytesIO(pix.tobytes("png")))
                 text = ocr_image(img, opts.ocr_langs)
             if text.strip():
-                sections.append(Section(clean_text(text), f"página {i}"))
+                sections.append(Section(clean_text(text), t(opts.language, "page", n=i)))
     return sections
 
 
@@ -148,7 +151,7 @@ def load_docx(path: Path, opts: LoaderOptions) -> list[Section]:
             text = p.text.strip()
             if not text:
                 continue
-            style = (p.style.name or "").lower() if p.style is not None else ""
+            style = (p.style.name or "").lower() if p.style is not None else ""  # localized in non-English Word
             m = re.search(r"(heading|título|titulo)\s*(\d)", style)
             if m:
                 parts.append(f"\n{'#' * int(m.group(2))} {text}\n")
@@ -165,7 +168,7 @@ def load_docx(path: Path, opts: LoaderOptions) -> list[Section]:
 
 def load_doc(path: Path, opts: LoaderOptions) -> list[Section]:
     if not shutil.which("antiword"):
-        raise UnsupportedFormat(".doc requiere antiword")
+        raise UnsupportedFormat(t(opts.language, "doc_needs_antiword"))
     out = subprocess.run(["antiword", str(path)], capture_output=True, timeout=120)
     if out.returncode != 0:
         raise RuntimeError(out.stderr.decode(errors="replace")[:300])
@@ -188,10 +191,10 @@ def load_pptx(path: Path, opts: LoaderOptions) -> list[Section]:
         if slide.has_notes_slide and slide.notes_slide.notes_text_frame is not None:
             notes = slide.notes_slide.notes_text_frame.text.strip()
             if notes:
-                parts.append(f"Notas: {notes}")
+                parts.append(t(opts.language, "notes") + ": " + notes)
         text = clean_text("\n".join(parts))
         if text:
-            sections.append(Section(text, f"diapositiva {i}"))
+            sections.append(Section(text, t(opts.language, "slide", n=i)))
     return sections
 
 
@@ -205,7 +208,7 @@ def load_xlsx(path: Path, opts: LoaderOptions) -> list[Section]:
             rows = [list(r) for r in ws.iter_rows(values_only=True)]
             text = table_rows_to_text(rows)
             if text:
-                sections.append(Section(text, f"hoja {ws.title}"))
+                sections.append(Section(text, t(opts.language, "sheet", name=ws.title)))
     finally:
         wb.close()
     return sections
@@ -220,7 +223,7 @@ def load_xls(path: Path, opts: LoaderOptions) -> list[Section]:
         rows = [sheet.row_values(i) for i in range(sheet.nrows)]
         text = table_rows_to_text(rows)
         if text:
-            sections.append(Section(text, f"hoja {sheet.name}"))
+            sections.append(Section(text, t(opts.language, "sheet", name=sheet.name)))
     return sections
 
 
@@ -273,7 +276,7 @@ def load_epub(path: Path, opts: LoaderOptions) -> list[Section]:
     for i, item in enumerate(book.get_items_of_type(ebooklib.ITEM_DOCUMENT), start=1):
         text = html_to_text(item.get_content().decode("utf-8", errors="replace"))
         if text:
-            sections.append(Section(text, f"capítulo {i}"))
+            sections.append(Section(text, t(opts.language, "chapter", n=i)))
     return sections
 
 
@@ -283,7 +286,7 @@ def load_html(path: Path, opts: LoaderOptions) -> list[Section]:
 
 def load_eml(path: Path, opts: LoaderOptions) -> list[Section]:
     msg = email.message_from_bytes(path.read_bytes(), policy=email.policy.default)
-    header = f"Asunto: {msg['subject']}\nDe: {msg['from']}\nPara: {msg['to']}\nFecha: {msg['date']}\n"
+    header = t(opts.language, "email_header", subject=msg["subject"], sender=msg["from"], to=msg["to"], date=msg["date"])
     body = msg.get_body(preferencelist=("plain", "html"))
     content = ""
     if body is not None:
@@ -298,7 +301,7 @@ def load_msg(path: Path, opts: LoaderOptions) -> list[Section]:
 
     msg = extract_msg.Message(str(path))
     try:
-        header = f"Asunto: {msg.subject}\nDe: {msg.sender}\nPara: {msg.to}\nFecha: {msg.date}\n"
+        header = t(opts.language, "email_header", subject=msg.subject, sender=msg.sender, to=msg.to, date=msg.date)
         body = msg.body or (html_to_text(msg.htmlBody.decode(errors="replace")) if msg.htmlBody else "")
     finally:
         msg.close()
@@ -307,7 +310,7 @@ def load_msg(path: Path, opts: LoaderOptions) -> list[Section]:
 
 def load_image(path: Path, opts: LoaderOptions) -> list[Section]:
     if not opts.ocr_enabled:
-        raise UnsupportedFormat("imagen: activa OCR_ENABLED para extraer su texto")
+        raise UnsupportedFormat(t(opts.language, "image_no_ocr"))
     from PIL import Image
 
     with Image.open(path) as img:
@@ -317,7 +320,7 @@ def load_image(path: Path, opts: LoaderOptions) -> list[Section]:
 def load_text(path: Path, opts: LoaderOptions) -> list[Section]:
     data = path.read_bytes()
     if looks_binary(data):
-        raise UnsupportedFormat("archivo binario sin lector disponible")
+        raise UnsupportedFormat(t(opts.language, "binary"))
     return [Section(clean_text(decode_bytes(data)))]
 
 
@@ -353,7 +356,7 @@ LOADERS: dict[str, Callable[[Path, LoaderOptions], list[Section]]] = {
     ".webp": load_image,
 }
 
-# Binarios conocidos que no tiene sentido intentar leer como texto
+# Known binaries that make no sense to read as text
 SKIP_EXTENSIONS = {
     ".zip", ".7z", ".rar", ".tar", ".gz", ".exe", ".dll", ".bin", ".iso", ".mp3", ".mp4",
     ".avi", ".mov", ".mkv", ".wav", ".class", ".jar", ".pyc", ".so", ".db", ".sqlite",
@@ -362,11 +365,11 @@ SKIP_EXTENSIONS = {
 
 
 def extract(path: Path, opts: LoaderOptions | None = None) -> list[Section]:
-    """Extrae el texto de un archivo. Para extensiones desconocidas intenta leerlo como texto."""
+    """Extracts the text of a file. Unknown extensions are read as text."""
     opts = opts or LoaderOptions()
     ext = path.suffix.lower()
     if ext in SKIP_EXTENSIONS:
-        raise UnsupportedFormat(f"formato {ext} no soportado")
+        raise UnsupportedFormat(t(opts.language, "unsupported_ext", ext=ext))
     loader = LOADERS.get(ext, load_text)
     sections = [s for s in loader(path, opts) if s.text.strip()]
     return sections

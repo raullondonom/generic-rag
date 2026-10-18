@@ -1,4 +1,4 @@
-"""Fuente: carpeta local montada en el contenedor (escaneo periódico incremental)."""
+"""Source: local folder mounted in the container (periodic incremental scan)."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import threading
 from pathlib import Path
 
 from ..config import Settings
+from ..i18n import t
 from .loaders import LoaderOptions, UnsupportedFormat, extract
 from .pipeline import Indexer
 
@@ -28,9 +29,10 @@ class FolderSource:
         self.settings = settings
         self.indexer = indexer
         self.root = Path(settings.docs_path)
-        self.opts = LoaderOptions(ocr_enabled=settings.ocr_enabled, ocr_langs=settings.ocr_langs)
+        self.lang = settings.language
+        self.opts = LoaderOptions(settings.ocr_enabled, settings.ocr_langs, settings.language)
         self.lock = threading.Lock()
-        # Caché (mtime, tamaño) -> hash para no recalcular hashes en cada escaneo
+        # (mtime, size) -> hash cache so hashes are not recomputed on every scan
         self._fingerprints: dict[str, tuple[float, int, str]] = {}
 
     def _files(self):
@@ -52,13 +54,14 @@ class FolderSource:
 
     def sync(self, full: bool = False) -> str:
         if not self.lock.acquire(blocking=False):
-            return "La carpeta ya se está indexando"
+            return t(self.lang, "folder_running")
         state = self.indexer.state
         try:
             state.run_started(SOURCE)
             if not self.root.exists():
-                state.run_finished(SOURCE, "error", f"No existe la carpeta {self.root}")
-                return "Carpeta no encontrada"
+                msg = t(self.lang, "folder_missing", path=self.root)
+                state.run_finished(SOURCE, "error", msg)
+                return msg
             seen: set[str] = set()
             changed = 0
             max_bytes = self.settings.max_file_mb * 1024 * 1024
@@ -71,7 +74,7 @@ class FolderSource:
                         version = f"size:{path.stat().st_size}"
                         if full or not self.indexer.is_current(doc_id, version):
                             self.indexer.mark(doc_id, version=version, status="unsupported",
-                                              error=f"supera MAX_FILE_MB ({self.settings.max_file_mb} MB)", **meta)
+                                              error=t(self.lang, "too_big", mb=self.settings.max_file_mb), **meta)
                         continue
                     version = self._version(path, rel)
                     if not full and self.indexer.is_current(doc_id, version):
@@ -81,21 +84,21 @@ class FolderSource:
                     self.indexer.index(doc_id, url="", version=version, sections=sections, **meta)
                 except UnsupportedFormat as e:
                     self.indexer.mark(doc_id, version=version, status="unsupported", error=str(e), **meta)
-                except Exception as e:  # noqa: BLE001 - un archivo roto no debe parar la ingesta
-                    log.exception("Error indexando %s", rel)
+                except Exception as e:  # noqa: BLE001 - a broken file must not stop ingestion
+                    log.exception("Error indexing %s", rel)
                     self.indexer.mark(doc_id, version="error", status="error", error=f"{type(e).__name__}: {e}", **meta)
 
             removed = state.ids_for_source(SOURCE) - seen
             for doc_id in removed:
                 self.indexer.remove(doc_id)
                 self._fingerprints.pop(doc_id.split(":", 1)[1], None)
-            msg = f"{changed} procesados, {len(removed)} eliminados, {len(seen)} archivos en carpeta"
+            msg = t(self.lang, "folder_done", changed=changed, removed=len(removed), seen=len(seen))
             state.run_finished(SOURCE, "ok", msg)
             if changed or removed:
-                log.info("Carpeta: %s", msg)
+                log.info("Folder: %s", msg)
             return msg
         except Exception as e:  # noqa: BLE001
-            log.exception("Error en la sincronización de la carpeta")
+            log.exception("Folder sync failed")
             state.run_finished(SOURCE, "error", str(e))
             return f"Error: {e}"
         finally:

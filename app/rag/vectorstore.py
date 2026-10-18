@@ -1,7 +1,8 @@
-"""Acceso a Qdrant: una colección con un punto por fragmento (chunk)."""
+"""Qdrant access: one point per chunk, in a collection of its own for each embeddings model."""
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass
 
@@ -9,6 +10,8 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models as qm
 
 from .config import Settings
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -19,9 +22,10 @@ class Hit:
 
 
 class VectorStore:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, client: QdrantClient | None = None):
+        self.prefix = settings.collection_prefix
         self.collection = settings.collection_name
-        self.client = QdrantClient(url=settings.qdrant_url, timeout=60)
+        self.client = client or QdrantClient(url=settings.qdrant_url, timeout=60)
         self._ready = False
 
     def ensure_collection(self, dim: int) -> None:
@@ -38,6 +42,18 @@ class VectorStore:
 
     def exists(self) -> bool:
         return self.client.collection_exists(self.collection)
+
+    def drop_other_collections(self) -> list[str]:
+        """Deletes the collections of previous models (same prefix, different model)."""
+        dropped = []
+        for c in self.client.get_collections().collections:
+            name = c.name
+            if name != self.collection and (name == self.prefix or name.startswith(self.prefix + "__")):
+                self.client.delete_collection(name)
+                dropped.append(name)
+        if dropped:
+            log.info("Deleted collections of previous models: %s", ", ".join(dropped))
+        return dropped
 
     def upsert(self, doc_id: str, chunks: list[str], vectors: list[list[float]], payloads: list[dict]) -> None:
         self.ensure_collection(len(vectors[0]))
@@ -59,17 +75,6 @@ class VectorStore:
             self.collection,
             points_selector=qm.FilterSelector(
                 filter=qm.Filter(must=[qm.FieldCondition(key="doc_id", match=qm.MatchValue(value=doc_id))])
-            ),
-            wait=True,
-        )
-
-    def delete_source(self, source: str) -> None:
-        if not self.exists():
-            return
-        self.client.delete(
-            self.collection,
-            points_selector=qm.FilterSelector(
-                filter=qm.Filter(must=[qm.FieldCondition(key="source", match=qm.MatchValue(value=source))])
             ),
             wait=True,
         )

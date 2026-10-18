@@ -1,4 +1,4 @@
-"""Fuente: Confluence Cloud (solo lectura). Indexa páginas y adjuntos de los espacios configurados."""
+"""Source: Confluence Cloud (read only). Indexes pages and attachments of the configured spaces."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from ..config import Settings
+from ..i18n import t
 from .loaders import LOADERS, SKIP_EXTENSIONS, LoaderOptions, Section, UnsupportedFormat, extract, html_to_text
 from .pipeline import Indexer
 
@@ -27,7 +28,8 @@ class ConfluenceSource:
         self.base = settings.confluence_url.rstrip("/")            # https://x.atlassian.net/wiki
         parts = urlsplit(self.base)
         self.site = f"{parts.scheme}://{parts.netloc}"               # https://x.atlassian.net
-        self.opts = LoaderOptions(ocr_enabled=settings.ocr_enabled, ocr_langs=settings.ocr_langs)
+        self.lang = settings.language
+        self.opts = LoaderOptions(settings.ocr_enabled, settings.ocr_langs, settings.language)
         self.lock = threading.Lock()
         self._client: httpx.Client | None = None
 
@@ -37,7 +39,7 @@ class ConfluenceSource:
         return bool(s.confluence_enabled and s.confluence_url and s.confluence_email
                     and s.confluence_token and s.confluence_space_keys)
 
-    # ------------------------------------------------------------ HTTP (solo GET)
+    # ------------------------------------------------------------ HTTP (GET only)
 
     def _get(self, url: str, **params) -> httpx.Response:
         if not url.startswith("http"):
@@ -46,7 +48,7 @@ class ConfluenceSource:
             resp = self._client.get(url, params=params or None)
             if resp.status_code == 429 or resp.status_code >= 500:
                 wait = float(resp.headers.get("Retry-After", 2 ** attempt))
-                log.warning("Confluence %s en %s, reintento en %.0fs", resp.status_code, url, wait)
+                log.warning("Confluence %s on %s, retrying in %.0fs", resp.status_code, url, wait)
                 time.sleep(min(wait, 60))
                 continue
             resp.raise_for_status()
@@ -60,15 +62,15 @@ class ConfluenceSource:
             data = self._get(url, **query).json()
             yield from data.get("results", [])
             url = data.get("_links", {}).get("next")
-            query = {}  # el enlace "next" ya trae el cursor y los parámetros
+            query = {}  # the "next" link already carries the cursor and the parameters
 
-    # ------------------------------------------------------------ sincronización
+    # ------------------------------------------------------------ sync
 
     def sync(self, full: bool = False) -> str:
         if not self.configured:
-            return "Confluence no está configurado"
+            return t(self.lang, "confluence_off")
         if not self.lock.acquire(blocking=False):
-            return "Confluence ya se está sincronizando"
+            return t(self.lang, "confluence_running")
         state = self.indexer.state
         state.run_started(SOURCE)
         self._client = httpx.Client(
@@ -83,18 +85,17 @@ class ConfluenceSource:
                                                      limit=250).json().get("results", [])}
             missing = [k for k in self.settings.confluence_space_keys if k not in spaces]
             if missing:
-                log.warning("Espacios de Confluence no encontrados o sin permiso: %s", ", ".join(missing))
+                log.warning("Confluence spaces not found or without permission: %s", ", ".join(missing))
             for key, space in spaces.items():
                 self._sync_space(key, space, full, totals)
-            msg = (f"{totals['pages']} páginas, {totals['attachments']} adjuntos, {totals['changed']} procesados, "
-                   f"{totals['removed']} eliminados, {totals['errors']} errores")
+            msg = t(self.lang, "confluence_done", **totals)
             if missing:
-                msg += f" · espacios no encontrados: {', '.join(missing)}"
+                msg += t(self.lang, "confluence_missing_spaces", spaces=", ".join(missing))
             state.run_finished(SOURCE, "ok", msg)
             log.info("Confluence: %s", msg)
             return msg
         except Exception as e:  # noqa: BLE001
-            log.exception("Error sincronizando Confluence")
+            log.exception("Confluence sync failed")
             state.run_finished(SOURCE, "error", f"{type(e).__name__}: {e}")
             return f"Error: {e}"
         finally:
@@ -102,7 +103,7 @@ class ConfluenceSource:
             self.lock.release()
 
     def _sync_space(self, key: str, space: dict, full: bool, totals: dict) -> None:
-        log.info("Sincronizando espacio %s (%s)", key, space.get("name"))
+        log.info("Syncing space %s (%s)", key, space.get("name"))
         seen: set[str] = set()
         for page in self._paginate(f"/api/v2/spaces/{space['id']}/pages", status="current"):
             totals["pages"] += 1
@@ -117,12 +118,13 @@ class ConfluenceSource:
                     body = self._get(f"/api/v2/pages/{page['id']}", **{"body-format": "view"}).json()
                     html = body.get("body", {}).get("view", {}).get("value", "")
                     text = html_to_text(html) if html else ""
-                    sections = [Section(f"Espacio: {space.get('name')} ({key})\n\n{text}")] if text else []
+                    header = t(self.lang, "space", name=space.get("name"), key=key)
+                    sections = [Section(f"{header}\n\n{text}")] if text else []
                     self.indexer.index(doc_id, source=SOURCE, title=title, location=f"{key} / {title}", url=url,
                                        version=version, sections=sections, container=key)
                 except Exception as e:  # noqa: BLE001
                     totals["errors"] += 1
-                    log.exception("Error en la página %s", title)
+                    log.exception("Error on page %s", title)
                     self.indexer.mark(doc_id, source=SOURCE, title=title, location=f"{key} / {title}",
                                       version="error", status="error", error=f"{type(e).__name__}: {e}", container=key)
             if self.settings.confluence_include_attachments:
@@ -138,9 +140,9 @@ class ConfluenceSource:
         try:
             attachments = list(self._paginate(f"/api/v2/pages/{page['id']}/attachments"))
         except Exception:  # noqa: BLE001
-            log.exception("No se pudieron listar los adjuntos de %s", page_title)
+            log.exception("Could not list the attachments of %s", page_title)
             totals["errors"] += 1
-            # Conservar los adjuntos ya indexados de esta página
+            # Keep the already indexed attachments of this page
             for doc in self.indexer.state.list(source=SOURCE, limit=100000):
                 if doc["doc_id"].startswith(f"{SOURCE}:att:") and doc["location"].startswith(f"{key} / {page_title} / "):
                     seen.add(doc["doc_id"])
@@ -150,7 +152,7 @@ class ConfluenceSource:
             name = att.get("title", "")
             ext = Path(name).suffix.lower()
             if ext in SKIP_EXTENSIONS or (ext in IMAGE_EXTENSIONS and not self.settings.ocr_enabled):
-                continue  # imágenes (capturas) sin OCR y binarios: no aportan texto
+                continue  # images (screenshots) without OCR and binaries: no text to add
             if (att.get("fileSize") or 0) > max_bytes:
                 continue
             totals["attachments"] += 1
@@ -164,7 +166,7 @@ class ConfluenceSource:
             meta = dict(source=SOURCE, title=name, location=location, container=key)
             try:
                 with tempfile.TemporaryDirectory() as tmp:
-                    path = Path(tmp) / f"adjunto{ext}"
+                    path = Path(tmp) / f"attachment{ext}"
                     path.write_bytes(self._get(self.base + att["downloadLink"]).content)
                     sections = extract(path, self.opts)
                 self.indexer.index(doc_id, url=page_url, version=version, sections=sections, **meta)
@@ -172,5 +174,5 @@ class ConfluenceSource:
                 self.indexer.mark(doc_id, version=version, status="unsupported", error=str(e), **meta)
             except Exception as e:  # noqa: BLE001
                 totals["errors"] += 1
-                log.exception("Error en el adjunto %s", name)
+                log.exception("Error on attachment %s", name)
                 self.indexer.mark(doc_id, version="error", status="error", error=f"{type(e).__name__}: {e}", **meta)

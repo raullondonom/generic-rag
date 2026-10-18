@@ -1,29 +1,36 @@
 # API
-fastapi>=0.115
-uvicorn[standard]>=0.30
-pydantic-settings>=2.4
-httpx>=0.27
-apscheduler>=3.10,<4
+fastapi==0.143.2
+uvicorn[standard]==0.54.0
+pydantic==2.14.1
+pydantic-settings==2.16.0
+httpx==0.28.1
+apscheduler==3.11.3
+pyyaml==6.0.3
+tzdata==2026.5
+
+# Estado (Postgres)
+psycopg[binary]==3.3.5
+psycopg-pool==3.3.3
 
 # IA y base vectorial
-anthropic
-qdrant-client>=1.12
+anthropic==1.15.0
+qdrant-client==1.19.1
 
 # Lectores de documentos
-pymupdf>=1.24
-python-docx>=1.1
-python-pptx>=1.0
-openpyxl>=3.1
-xlrd>=2.0
-odfpy>=1.4
-striprtf>=0.0.26
-ebooklib>=0.18
-beautifulsoup4>=4.12
-lxml>=5.0
-extract-msg>=0.48
-charset-normalizer>=3.3
-pytesseract>=0.3.10
-pillow>=10.0
+pymupdf==1.28.2
+python-docx==1.2.0
+python-pptx==1.0.2
+openpyxl==3.1.5
+xlrd==2.0.2
+odfpy==1.4.1
+striprtf==0.0.33
+ebooklib==0.20
+beautifulsoup4==4.15.0
+lxml==6.1.3
+extract-msg==0.56.1
+charset-normalizer==3.5.2
+pytesseract==0.3.13
+pillow==12.3.0
 
 # Tests
-pytest>=8.0
+pytest==9.1.1

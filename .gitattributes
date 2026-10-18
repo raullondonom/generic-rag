@@ -1,4 +1,4 @@
-# Finales de línea LF en el repositorio (Docker, shell y Python se ejecutan en Linux)
+# LF line endings in the repository (Docker, shell and Python run on Linux)
 * text=auto eol=lf
 *.png binary
 *.jpg binary

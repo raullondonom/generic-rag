@@ -1,152 +1,235 @@
-# RAG genérico (carpeta local + Confluence)
+# Generic RAG
 
-Asistente de preguntas y respuestas que contesta **únicamente** con la información de:
+A question-answering assistant that replies **only** with the information found in:
 
-- los archivos de una carpeta local (PDF, Word, Excel, PowerPoint, CSV, HTML, Markdown, texto, correos, OpenDocument, RTF, EPUB…), y
-- las páginas y adjuntos de los espacios de **Confluence Cloud** configurados.
+- the files of a local folder (PDF, Word, Excel, PowerPoint, CSV, HTML, Markdown, plain text, emails, OpenDocument, RTF, EPUB…), and
+- optionally, the pages and attachments of **Confluence Cloud** spaces (off by default).
 
-La IA puede ser **local** (Ollama, en GPU o CPU) o **remota** (Claude de Anthropic), y se elige desde la interfaz o por configuración.
+Answers come from **Claude** (Anthropic API) when an API key is available, or from a **local model** (Ollama, on GPU or CPU) otherwise. With a Claude key the local model container is not even started, so it uses no GPU or RAM. Embeddings are always computed locally with Hugging Face [text-embeddings-inference](https://github.com/huggingface/text-embeddings-inference).
 
-## Reglas del asistente
+The web UI is mobile first and also works in desktop browsers. Its texts, and the assistant's prompts, are available in English and Spanish (`LANGUAGE=en|es`).
 
-- Solo responde con los documentos indexados y cita las fuentes `[n]`.
-- No tiene acceso a internet: la IA no recibe ninguna herramienta, así que no puede buscar fuera.
-- Si la información no está o la pregunta es ambigua, lo dice y **pide al usuario** los datos que faltan.
-- Si ningún fragmento supera la similitud mínima (`MIN_SCORE`), ni siquiera se llama a la IA.
-- Los embeddings se calculan siempre en local (`bge-m3`): los documentos no salen de la máquina al indexar. Solo los fragmentos relevantes para cada pregunta se envían a Claude cuando se usa ese proveedor.
+## Assistant rules
 
-## Arquitectura
+- It answers only from the indexed documents and cites its sources as `[n]`.
+- It has no internet access: the AI gets no tools, so it cannot search anywhere else.
+- If the information is missing or the question is ambiguous, it says so and **asks the user** for what it needs.
+- If no chunk reaches the minimum similarity (`MIN_SCORE`), the AI is not even called.
+- Documents never leave the machine while indexing. When Claude is used, only the chunks relevant to each question are sent, after secrets are redacted.
+
+## Features
+
+- **Persistent conversations.** The history is stored in Postgres. The browser only keeps the ids of its own conversations (in `localStorage`), so it can reopen or delete them later. There are no user accounts: the conversation id (a random UUID) acts as the key, and the server never lists conversations it was not asked for.
+- **Optional answer ratings.** Every answer can be rated thumbs up or down, with an optional reason and comment. Ratings are stored in Postgres, together with a copy of the question and answer, and they help find what to improve (see [Ratings](#ratings)).
+- **Claude spending control.** Before each call the worst-case cost is estimated against a monthly cap (`MONTHLY_BUDGET_USD`), and every call is recorded with its tokens and cost. The UI shows the month's spend. Prompt caching reuses the system prompt and the conversation history between turns, follow-up questions are rewritten with a cheaper model, and `DRY_RUN=true` simulates Claude without spending anything.
+- **Secret redaction.** API keys, tokens, private keys, passwords and connection strings are replaced with `[REDACTED]` before indexing and before anything is sent to Claude. Personal data (emails, card or ID numbers) is optional.
+- **One collection per embeddings model.** When `EMBEDDING_MODEL` changes, everything is reindexed from scratch at startup and the previous model's collection is deleted, so vectors from different models are never mixed.
+- **Health checks.** `GET /health` checks the database, Qdrant, the embeddings service (it must load the configured model), the index and each AI provider.
+
+## Architecture
 
 ```
-documentos/ ─┐                       ┌─> Qdrant (base vectorial)
-             ├─> rag-app (FastAPI) ──┤
-Confluence ──┘   · ingesta           └─> Ollama (bge-m3 embeddings + qwen3:8b)
-                 · API REST + UI web ───> Claude API (opcional)
+documents/ ──┐                          ┌─> Qdrant (vectors)
+             ├─> rag-app (FastAPI) ─────┼─> Postgres (state, conversations, ratings, spend)
+Confluence ──┘   · ingestion            ├─> embeddings (TEI + Qwen3-Embedding-0.6B)
+(optional)
+                 · REST API + web UI    ├─> Claude API (if there is an API key)
+                                        └─> Ollama (local model, "ollama" profile)
 ```
 
-| Servicio | Función | Puerto (solo localhost) |
+| Service | Role | Port (localhost only) |
 |---|---|---|
-| `rag-app` | API, interfaz web e ingesta | `8000` |
-| `qdrant` | Base vectorial | `6333` (dashboard en `/dashboard`) |
-| `ollama` | Modelos locales (GPU o CPU) | `11434` |
-| `ollama-init` | Descarga los modelos y termina | — |
-| `ngrok` | Túnel público protegido (opcional, perfil `ngrok`) | `4040` (panel) |
+| `rag-app` | API, web UI and ingestion | `8000` |
+| `postgres` | Ingestion state, conversations, ratings and Claude spend | — |
+| `qdrant` | Vector database | `6333` (dashboard at `/dashboard`) |
+| `embeddings` | Local embeddings (CPU, or GPU with `docker-compose.gpu.yml`) | — |
+| `ollama` | Local model (`ollama` profile, only without a Claude key) | `11434` |
+| `ollama-init` | Pulls the local model and exits (same profile) | — |
+| `ngrok` | Protected public tunnel (optional, `ngrok` profile) | `4040` (dashboard) |
 
-## Requisitos de hardware
+## Hardware requirements
 
-| Escenario | CPU | RAM | GPU | Disco | Tiempo de respuesta |
+| Scenario | CPU | RAM | GPU | Disk | Answer time |
 |---|---|---|---|---|---|
-| **Mínimo**: respuestas con Claude (API); embeddings locales en CPU | 4 núcleos x86-64 con AVX2 | 8 GB (6 GB para Docker) | No necesaria | 15 GB | 5–15 s |
-| **Local sin GPU**: Ollama `qwen3:8b` en CPU | 8+ núcleos con AVX2 (Intel 10ª gen. / Ryzen 3000 o superior) | 16 GB (12 GB para Docker) | No | 20 GB | 30–90 s |
-| **Recomendado**: Ollama en GPU | 8+ núcleos con AVX2 | 32 GB (16 GB para Docker) | NVIDIA con 8 GB de VRAM o más (RTX 3060/4060 o superior) y driver ≥ 550 | 20 GB SSD | 10–15 s |
+| **Minimum**: answers with Claude; embeddings on CPU | 4 x86-64 cores with AVX2 | 8 GB (6 GB for Docker) | Not needed | 10 GB | 5–15 s |
+| **Local without GPU**: Ollama on CPU | 8+ cores with AVX2 | 16 GB (12 GB for Docker) | No | 20 GB | 30–90 s |
+| **Recommended**: Ollama and embeddings on GPU | 8+ cores with AVX2 | 32 GB (16 GB for Docker) | NVIDIA with 8 GB of VRAM or more, driver ≥ 550 | 25 GB SSD | 3–10 s |
 
-Notas:
+Notes:
 
-- Funciona en Windows 10/11 (Docker Desktop con WSL2), Linux y macOS. En Mac con Apple Silicon, Ollama dentro de Docker no usa la GPU, así que se comporta como el escenario "Local sin GPU".
-- En equipos con poca RAM, usa un modelo local más pequeño (`OLLAMA_CHAT_MODEL=qwen3:4b`) o el proveedor `anthropic`.
-- **Windows**: limita la memoria de WSL2 en `%USERPROFILE%\.wslconfig` (por ejemplo, `memory=16GB`) y deja un archivo de paginación de al menos 16 GB. En WSL2, la GPU también consume memoria de compromiso de Windows; si se agota, aparece el error `cudaMalloc failed: out of memory` aunque la GPU esté libre.
-- Para comprobar la GPU en Docker: `docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi`.
+- It runs on Windows 10/11 (Docker Desktop with WSL2), Linux and macOS. On Apple Silicon, Docker containers cannot use the GPU, so it behaves like "Local without GPU".
+- **Windows**: limit WSL2 memory in `%USERPROFILE%\.wslconfig` (for example `memory=16GB`) and keep a page file of at least 16 GB. Under WSL2 the GPU also uses Windows commit memory; when it runs out you get `cudaMalloc failed: out of memory` even with free VRAM.
+- To check the GPU in Docker: `docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi`.
 
-## Prueba rápida (5 minutos + descarga de modelos)
+## Quick start
 
 ```bash
 git clone https://github.com/raullondonom/generic-rag.git
 cd generic-rag
-cp .env.example .env            # en Windows (PowerShell): copy .env.example .env
+cp .env.example .env            # on Windows (PowerShell): copy .env.example .env
 docker compose up -d --build
-docker compose logs -f ollama-init   # la primera vez descarga ~6,5 GB de modelos; espera a que termine
+docker compose logs -f ollama-init   # the first start downloads the models; wait until it finishes
 ```
 
-1. Abre <http://localhost:8000>.
-2. Pregunta sobre el documento de ejemplo incluido (`documentos/ejemplo-guia-de-uso.md`), por ejemplo: *"¿Cómo agrego documentos nuevos?"*. Debe responder citando la fuente `[1]`.
-3. Comprueba las reglas con una pregunta ajena a los documentos, como *"¿Quién ganó el mundial 2022?"*. Debe responder que no tiene esa información y pedir más datos.
-4. Copia tus propios archivos a `documentos/`: se indexan solos en menos de un minuto.
+1. Open <http://localhost:8000> (on a phone, use your computer's IP or the ngrok tunnel).
+2. Ask about the sample document (`documents/example-user-guide.md`), for example *"How do I add new documents?"*. The answer must cite source `[1]`.
+3. Check the rules with an unrelated question, like *"Who won the 2022 World Cup?"*. It must say it has no such information and ask for more details.
+4. Copy your own files into `documents/`: they are indexed by themselves in under a minute.
 
-Opcional:
+Optional:
 
-- **GPU NVIDIA**: descomenta `COMPOSE_PATH_SEPARATOR` y `COMPOSE_FILE` en `.env` y ejecuta `docker compose up -d`.
-- **Claude**: define la API key (ver "Secretos") y elige "Claude (Anthropic)" en la interfaz.
-- **Confluence**: configura las variables `CONFLUENCE_*` en `.env` (ver más abajo).
+- **NVIDIA GPU**: uncomment `COMPOSE_PATH_SEPARATOR` and `COMPOSE_FILE` in `.env`, set `TEI_GPU_IMAGE` for your GPU architecture, and run `docker compose up -d`.
+- **Claude**: set the API key (see [Secrets](#secrets)). Claude then answers and Ollama is not started. To keep both and choose in the UI: `COMPOSE_PROFILES=ollama,ollama-with-claude` and `OLLAMA_WITH_CLAUDE=true`.
+- **Confluence**: set the `CONFLUENCE_*` variables in `.env` (see below). It syncs once a day (`CONFLUENCE_SYNC_TIME`, 16:00 by default) and on demand from the side panel.
+- **Only Claude, no local model**: remove `ollama` from `COMPOSE_PROFILES` and leave `OLLAMA_URL` empty.
+- **Spanish UI and prompts**: `LANGUAGE=es`.
 
-## Secretos
+## Choosing the local model
 
-No se guardan en el repositorio. Docker Compose los lee de las variables de entorno del sistema o de `.env`, que está en `.gitignore`.
+`app/bench/llm_benchmark.py` compares Ollama models on your hardware with a fixed dataset: every question gets all the documents of a fictional company as context (with distractors), and the score is deterministic, with no AI judge. It counts expected facts found, `[n]` citations, and saying "I can't find it" when the answer is not in the documents. It also measures time to first token, tokens per second and VRAM.
 
-| Variable | Uso |
+With a Claude key Ollama is not running, so start it first: `COMPOSE_PROFILES=ollama,ollama-with-claude docker compose up -d ollama`.
+
+```bash
+docker compose run --rm -v ./app/bench/results:/app/bench/results rag-app \
+  python -m bench.llm_benchmark --dataset es \
+  --models qwen3:4b-instruct-2507-q4_K_M,qwen3.5:4b-q4_K_M,gemma4:e4b-it-qat
+```
+
+The included dataset (`app/bench/datasets/es`) is in Spanish. To add another language, copy the folder and translate `cases.yaml` and the corpus.
+
+Results on an RTX 4070 Laptop (8 GB of VRAM, shared with the embeddings service), Spanish dataset, `OLLAMA_NUM_CTX=12288`:
+
+| Model | Fully correct (of 20) | VRAM | On GPU | Avg. answer | Time to first token | Tokens/s |
+|---|---|---|---|---|---|---|
+| **`qwen3:4b-instruct-2507-q4_K_M`** (default) | **20** | 3.6 GB | 100 % | 2.6 s | 1.2 s | 60 |
+| `qwen3:8b` | 20 | 6.0 GB | 100 % | 4.2 s | 2.5 s | 38 |
+| `qwen3.5:9b-q4_K_M` | 20 | 5.6 GB | 88 % | 5.8 s | 2.2 s | 31 |
+| `gemma4:e4b-it-qat` | 19 | 3.1 GB | 100 % | 2.5 s | 1.1 s | 55 |
+| `qwen3.5:4b-q4_K_M` | 18 | 3.3 GB | 100 % | 2.8 s | 1.2 s | 58 |
+| `gemma4:e2b-it-qat` | 18 | 1.8 GB | 100 % | 1.4 s | 0.6 s | 88 |
+| `granite4.2:8b-q4_K_M` | 18 | 6.3 GB | 100 % | 6.7 s | 2.2 s | 35 |
+
+Every model ignored the prompt injection planted in a document, preferred a newer notice over the outdated runbook, and said "not found" for the 3 questions with no answer. The differences came from answering an English question in Spanish (`gemma4`, `qwen3.5:4b`, `granite`), a missing computation (`gemma4:e2b`), and incomplete multi-document answers. `qwen3:4b-instruct-2507` is the default because it gets everything right at the speed of the small models, and it leaves VRAM free for the embeddings service. With less VRAM, `gemma4:e2b-it-qat` (1.8 GB) is the fastest option. Bigger models did not answer better on this dataset.
+
+To recompute the scores of a saved run after editing `cases.yaml` (no model is called):
+
+```bash
+docker compose run --rm -v ./app/bench/results:/app/bench/results rag-app \
+  python -m bench.llm_benchmark --dataset es --rescore /app/bench/results/<run>.json
+```
+
+## Secrets
+
+They are not stored in the repository. Docker Compose reads them from the system environment variables or from `.env`, which is in `.gitignore`.
+
+| Variable | Use |
 |---|---|
-| `ANTHROPIC_API_KEY` o `GENRIC_RAG_ANTHROPIC_API_KEY` | API key de Claude. Es opcional: sin ella solo se ofrece Ollama |
-| `CONFLUENCE_EMAIL` / `CONFLUENCE_TOKEN`, o `JIRA_EMAIL` / `JIRA_TOKEN` | Correo y API token de Atlassian (id.atlassian.com → Seguridad → Tokens de API) |
-| `NGROK_AUTHTOKEN` | Solo para publicar la app con ngrok |
+| `ANTHROPIC_API_KEY` or `GENRIC_RAG_ANTHROPIC_API_KEY` | Claude API key. Optional: without it only the local model is offered |
+| `POSTGRES_PASSWORD` or `GENRIC_RAG_POSTGRES_PASSWORD` | Postgres password (letters and digits). Only reachable inside the Docker network |
+| `CONFLUENCE_EMAIL` / `CONFLUENCE_TOKEN`, or `JIRA_EMAIL` / `JIRA_TOKEN` | Only for Confluence: Atlassian email and API token (id.atlassian.com → Security → API tokens) |
+| `NGROK_AUTHTOKEN` | Only to publish the app with ngrok |
+| `HF_TOKEN` | Only for private or gated Hugging Face embedding models |
 
-En Windows, después de crear una variable de entorno, abre una terminal nueva (o reinicia VS Code) para que la detecte.
+On Windows, after creating an environment variable, open a new terminal (or restart VS Code) so it is picked up.
 
-## Configuración (`.env`)
+## Configuration (`.env`)
 
-Todas las opciones están documentadas en [.env.example](.env.example). Las más importantes son:
+Every option is documented in [.env.example](.env.example). The most important ones:
 
-| Variable | Por defecto | Descripción |
+| Variable | Default | Description |
 |---|---|---|
-| `LLM_PROVIDER` | `ollama` | Proveedor por defecto (`ollama` / `anthropic`) |
-| `OLLAMA_CHAT_MODEL` | `qwen3:8b` | Modelo local |
-| `OLLAMA_NUM_GPU` / `OLLAMA_NUM_CTX` | `30` / `12288` | Capas en GPU y contexto, ajustados para 8 GB de VRAM |
-| `ANTHROPIC_MODEL` | `claude-opus-5-5` | Modelo de Claude |
-| `ANTHROPIC_EFFORT` | `medium` | Profundidad de razonamiento de Claude |
-| `CONFLUENCE_ENABLED` | `false` | Activa la sincronización con Confluence Cloud |
-| `CONFLUENCE_URL` | — | Por ejemplo, `https://tu-empresa.atlassian.net/wiki` |
-| `CONFLUENCE_SPACES` | — | Claves de los espacios a indexar (aparecen en la URL: `/wiki/spaces/<CLAVE>/`) |
-| `CONFLUENCE_SYNC_MINUTES` | `60` | Frecuencia de sincronización de Confluence |
-| `FOLDER_SCAN_INTERVAL` | `60` | Segundos entre revisiones de la carpeta |
-| `TOP_K` / `MIN_SCORE` | `8` / `0.45` | Fragmentos recuperados y similitud mínima |
-| `OCR_ENABLED` | `false` | OCR (Tesseract) para PDFs escaneados e imágenes |
+| `LANGUAGE` | `en` | Language of the UI, the canned answers and the prompts (`en` / `es`) |
+| `LLM_PROVIDER` | `auto` | `auto` (Claude if there is a key, otherwise Ollama), `anthropic` or `ollama` |
+| `ANTHROPIC_MODEL` / `ANTHROPIC_FAST_MODEL` | `claude-opus-5-5` / `claude-haiku-5-5` | Model for answers / model to rewrite follow-up questions |
+| `ANTHROPIC_EFFORT` | `medium` | Claude's reasoning depth |
+| `MONTHLY_BUDGET_USD` | `10` | Monthly cap for Claude |
+| `DRY_RUN` | `false` | Simulated Claude, no spending |
+| `OLLAMA_CHAT_MODEL` | `qwen3:4b-instruct-2507-q4_K_M` | Local model (see the benchmark) |
+| `OLLAMA_WITH_CLAUDE` | `false` | Also offer Ollama when Claude is available (start it with the `ollama-with-claude` profile) |
+| `EMBEDDING_MODEL` | `Qwen/Qwen3-Embedding-0.6B` | Embeddings model (TEI) |
+| `REDACT_SECRETS` / `REDACT_PERSONAL_DATA` | `true` / `false` | Redaction before indexing and before Claude |
+| `CONVERSATION_RETENTION_DAYS` | `180` | Inactive conversations are deleted after this many days (0 = never) |
+| `CONFLUENCE_ENABLED` | `false` | Turns Confluence Cloud sync on |
+| `CONFLUENCE_URL` / `CONFLUENCE_SPACES` | — | For example `https://your-company.atlassian.net/wiki` / keys of the spaces to index (shown in the URL: `/wiki/spaces/<KEY>/`) |
+| `CONFLUENCE_SYNC_TIME` | `16:00` | Daily Confluence sync time (HH:MM in `TZ`; empty = manual only). The first start syncs right away |
+| `FOLDER_SCAN_INTERVAL` | `60` | Seconds between folder scans (`0` = automatic updates off; reindex from the side panel) |
+| `TOP_K` / `MIN_SCORE` | `8` / `0.45` | Retrieved chunks and minimum similarity |
+| `OCR_ENABLED` | `false` | OCR (Tesseract) for scanned PDFs and images |
 
-Después de cambiar `.env`, aplica los cambios con `docker compose up -d`.
-Si cambias `EMBED_MODEL`, `CHUNK_SIZE` o `CHUNK_OVERLAP`, reindexa todo desde cero (ver más abajo).
+After changing `.env`, apply it with `docker compose up -d`.
+If you change `CHUNK_SIZE`, `CHUNK_OVERLAP` or the redaction settings, reindex everything (see below). Changing `EMBEDDING_MODEL` reindexes by itself.
 
-## Acceso externo con ngrok (pruebas)
+## Ratings
 
-La app no tiene login: por eso el túnel de ngrok se protege con usuario y contraseña (`NGROK_BASIC_AUTH`).
+Below every answer there are two buttons, 👍 and 👎. They are optional. A 👎 opens a small form with a reason (incorrect, incomplete, didn't find the info, wrong sources, other) and a comment; both can be left empty. Clicking the same button again removes the rating.
 
-1. Crea la variable de entorno `NGROK_AUTHTOKEN` con tu authtoken (dashboard.ngrok.com → *Your Authtoken*).
-2. Define `NGROK_BASIC_AUTH=usuario:contraseña` en `.env`. La contraseña debe tener al menos 8 caracteres.
-3. Arranca el túnel:
+Each rating keeps a copy of the question, the answer, the sources and the provider and model that answered, so it is not lost when the conversation is deleted or expires.
+
+- `GET /api/feedback/summary?days=30` returns only aggregated numbers: satisfaction, ratings by provider and model, and reasons.
+- The detail (questions, answers and comments) is exported from the command line by whoever runs the server:
+
+```bash
+docker compose exec rag-app python -m rag.feedback --negative --days 30          # JSON
+docker compose exec rag-app python -m rag.feedback --format csv > feedback.csv
+docker compose exec rag-app python -m rag.feedback --format summary
+```
+
+Typical uses: a `not_found` answer often means a document is missing from the index or `MIN_SCORE` is too high; `bad_sources` points at retrieval (chunking, `TOP_K`, the embeddings model); `wrong` or `incomplete` on one model compared with another helps decide the local model or Claude's effort.
+
+## External access with ngrok (testing)
+
+The app has no login, so the ngrok tunnel is protected with a user and password (`NGROK_BASIC_AUTH`).
+
+1. Create the `NGROK_AUTHTOKEN` environment variable with your authtoken (dashboard.ngrok.com → *Your Authtoken*).
+2. Set `NGROK_BASIC_AUTH=user:password` in `.env`. The password must have at least 8 characters.
+3. Start the tunnel:
    ```bash
    docker compose --profile ngrok up -d
    ```
-4. Consulta la URL pública en <http://localhost:4040> o con `docker compose logs ngrok`.
+4. Find the public URL at <http://localhost:4040> or with `docker compose logs ngrok`.
 
-Para cerrarlo, ejecuta `docker compose stop ngrok`. Ten en cuenta que quien acceda por ngrok consulta los documentos indexados y consume créditos de Claude.
+To close it, run `docker compose stop ngrok`. Keep in mind that anyone who gets in through ngrok can query the indexed documents and spend Claude credits.
 
-## API REST
+## REST API
 
-| Método | Ruta | Descripción |
+| Method | Path | Description |
 |---|---|---|
-| `POST` | `/api/chat` | `{question, history[], provider?}` → stream SSE con eventos `meta`, `sources`, `token`, `done` y `error` |
-| `GET` | `/api/status` | Estado del índice, proveedores y última sincronización |
-| `GET` | `/api/documents?source=&status=` | Documentos procesados (`indexed`, `unsupported`, `error`, `empty`) |
+| `POST` | `/api/chat` | `{question, conversation_id?, provider?}` → SSE stream with `meta` (includes the `conversation_id`), `sources`, `token`, `done` (includes the `message_id`) and `error` events |
+| `POST` | `/api/conversations/lookup` | `{ids: [...]}` → summary of those conversations |
+| `GET` / `DELETE` | `/api/conversations/{id}` | Messages of a conversation (with their ratings) / delete it |
+| `PUT` / `DELETE` | `/api/conversations/{id}/messages/{message_id}/feedback` | `{rating: 1\|-1, reason?, comment?}` / remove the rating |
+| `GET` | `/api/feedback/summary?days=30` | Aggregated ratings |
+| `GET` | `/api/status` | Index, providers, Claude spend and last sync |
+| `GET` | `/api/documents?source=&status=` | Processed documents (`indexed`, `unsupported`, `error`, `empty`) |
 | `POST` | `/api/reindex` | `{source: folder\|confluence\|all, full: false}` |
-| `GET` | `/api/file?path=` | Abre un archivo citado de la carpeta |
-| `GET` | `/docs` | Documentación interactiva (Swagger) |
+| `GET` | `/api/file?path=` | Opens a cited file of the folder |
+| `GET` | `/health` | Health of every service (200 or 503) |
+| `GET` | `/docs` | Interactive documentation (Swagger) |
 
-Ejemplo:
+Example:
 
 ```bash
 curl -N -X POST http://localhost:8000/api/chat -H "Content-Type: application/json" \
-  -d '{"question": "¿Cómo se despliega a producción?", "provider": "anthropic"}'
+  -d '{"question": "How do I add new documents?", "provider": "ollama"}'
 ```
 
-## Operación
+## Operations
 
-- **Ingesta incremental**: solo se procesan los archivos nuevos o modificados (por hash) y las páginas o adjuntos con una versión nueva. Lo que se borra del origen también se elimina del índice.
-- **Reindexar todo desde cero**: `POST /api/reindex {"source": "all", "full": true}`, o bien `docker compose down` seguido de `docker volume rm genric-rag_qdrant_data genric-rag_rag_state`.
-- **Archivos no soportados o con error**: aparecen en el panel lateral y en `GET /api/documents?status=error`.
-- **Tests**: `docker compose run --rm --no-deps rag-app pytest -q`.
-- **Error `cudaMalloc failed: out of memory`**: el modelo no cabe en la VRAM. Baja `OLLAMA_NUM_GPU` (capas en GPU) u `OLLAMA_NUM_CTX` en `.env` y ejecuta `docker compose up -d`.
+- **Incremental ingestion**: only new or modified files (by hash) and Confluence pages or attachments with a new version are processed. Whatever is deleted at the source is also removed from the index.
+- **Reindex everything**: `POST /api/reindex {"source": "all", "full": true}`.
+- **Unsupported files or errors**: they show in the side panel and in `GET /api/documents?status=error`.
+- **Tests**: `docker compose run --rm --no-deps rag-app pytest -q`. The tests that need Postgres run when `TEST_DATABASE_URL` is set (they use a temporary schema):
+  ```bash
+  docker compose run --rm -e TEST_DATABASE_URL=postgresql://rag:<password>@postgres:5432/rag rag-app pytest -q
+  ```
+- **`cudaMalloc failed: out of memory`**: the model does not fit in VRAM. Lower `OLLAMA_NUM_GPU` (layers on the GPU) or `OLLAMA_NUM_CTX` in `.env`, or pick a smaller model, and run `docker compose up -d`.
 
-## Licencia
+## License
 
-Este proyecto se distribuye bajo la [PolyForm Noncommercial License 1.0.0](LICENSE).
+This project is distributed under the [PolyForm Noncommercial License 1.0.0](LICENSE).
 
-- ✅ **Uso personal, privado, educativo, de investigación o por organizaciones sin ánimo de lucro**: permitido y gratuito, incluso modificándolo.
-- ❌ **Uso comercial** (venderlo, ofrecerlo como servicio de pago o usarlo para obtener beneficios económicos): **no está permitido** sin una licencia comercial. Si te interesa, contacta con el autor en <https://github.com/raullondonom> para negociarla.
+- ✅ **Personal, private, educational, research or non-profit use**: allowed and free, including modified versions.
+- ❌ **Commercial use** (selling it, offering it as a paid service or using it to make money): **not allowed** without a commercial license. If you are interested, contact the author at <https://github.com/raullondonom>.
 
-El texto legal vinculante es el del archivo [LICENSE](LICENSE), en inglés.
+The binding legal text is the [LICENSE](LICENSE) file.

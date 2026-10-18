@@ -1,0 +1,46 @@
+# Claude prices (USD per million tokens), used for the MONTHLY_BUDGET_USD cap.
+# Source: https://platform.claude.com/docs/en/about-claude/pricing (checked 2026-10-17)
+# A model missing here is charged at the price of the most expensive model in the table (conservative).
+verified: 2026-10-17
+models:
+  claude-haiku-5-5:
+    tiers:
+      - up_to_input_tokens: 100000
+        input: 0.10
+        cache_write_5m: 0.125
+        cache_read: 0.01
+        output: 0.50
+      - up_to_input_tokens: null
+        input: 0.50
+        cache_write_5m: 0.625
+        cache_read: 0.05
+        output: 2.50
+  claude-sonnet-5-5:
+    tiers:
+      - up_to_input_tokens: null
+        input: 2.00
+        cache_write_5m: 2.50
+        cache_read: 0.20
+        output: 10.00
+  claude-opus-5-5:
+    tiers:
+      - up_to_input_tokens: null
+        input: 4.00
+        cache_write_5m: 5.00
+        cache_read: 0.20
+        output: 20.00
+  # Models the server-side fallback may switch to when Claude declines a request
+  claude-opus-5:
+    tiers:
+      - up_to_input_tokens: null
+        input: 5.00
+        cache_write_5m: 6.25
+        cache_read: 0.50
+        output: 25.00
+  claude-opus-4-8:
+    tiers:
+      - up_to_input_tokens: null
+        input: 5.00
+        cache_write_5m: 6.25
+        cache_read: 0.50
+        output: 25.00

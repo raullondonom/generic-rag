@@ -1,4 +1,8 @@
-"""Embeddings locales con Ollama (los documentos nunca salen de la máquina)."""
+"""Local embeddings with text-embeddings-inference (TEI): documents never leave the machine.
+
+"Instruct" models (Qwen3-Embedding, e5-instruct) work better when the query is prefixed with an
+instruction; documents are embedded as-is (classic e5 uses "query: " / "passage: ").
+"""
 
 from __future__ import annotations
 
@@ -6,21 +10,56 @@ import httpx
 
 from .config import Settings
 
+_QUERY_PREFIXES = {
+    "qwen/qwen3-embedding": "Instruct: {instruction}\nQuery:",
+    "intfloat/multilingual-e5-large-instruct": "Instruct: {instruction}\nQuery: ",
+    "intfloat/multilingual-e5-": "query: ",
+    "snowflake/snowflake-arctic-embed": "query: ",
+}
+_DOCUMENT_PREFIXES = {"intfloat/multilingual-e5-": "passage: "}
+
+
+def _prefix(table: dict[str, str], model: str) -> str:
+    model = model.lower()
+    for key in sorted(table, key=len, reverse=True):
+        if model.startswith(key):
+            return table[key]
+    return ""
+
+
+def query_prefix(model: str, instruction: str) -> str:
+    return _prefix(_QUERY_PREFIXES, model).replace("{instruction}", instruction)
+
+
+def document_prefix(model: str) -> str:
+    if "instruct" in model.lower():
+        return ""
+    return _prefix(_DOCUMENT_PREFIXES, model)
+
 
 class Embedder:
-    def __init__(self, settings: Settings, batch_size: int = 16):
-        self.model = settings.embed_model
-        self.batch_size = batch_size
-        self._client = httpx.Client(base_url=settings.ollama_url, timeout=httpx.Timeout(300.0, connect=10.0))
+    def __init__(self, settings: Settings):
+        self.model = settings.embedding_model
+        self.batch_size = settings.embedding_batch
+        self._query_prefix = query_prefix(self.model, settings.embedding_instruction)
+        self._document_prefix = document_prefix(self.model)
+        self._client = httpx.Client(base_url=settings.embedding_url, timeout=httpx.Timeout(300.0, connect=10.0))
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def info(self) -> dict:
+        resp = self._client.get("/info", timeout=5)
+        resp.raise_for_status()
+        return resp.json()
+
+    def _embed(self, texts: list[str]) -> list[list[float]]:
         vectors: list[list[float]] = []
         for i in range(0, len(texts), self.batch_size):
-            batch = texts[i:i + self.batch_size]
-            resp = self._client.post("/api/embed", json={"model": self.model, "input": batch, "truncate": True})
+            resp = self._client.post("/embed", json={"inputs": texts[i:i + self.batch_size], "truncate": True})
             resp.raise_for_status()
-            vectors.extend(resp.json()["embeddings"])
+            vectors.extend(resp.json())
         return vectors
 
-    def embed_one(self, text: str) -> list[float]:
-        return self.embed([text])[0]
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return self._embed([self._document_prefix + t for t in texts])
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._embed([self._query_prefix + text])[0]

@@ -1,24 +1,66 @@
 name: genric-rag
 
 services:
+  postgres:
+    image: postgres:18.4-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: rag
+      POSTGRES_DB: rag
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-${GENRIC_RAG_POSTGRES_PASSWORD:-rag-local}}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag -d rag"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.19.2
     restart: unless-stopped
     volumes:
       - qdrant_data:/qdrant/storage
     ports:
       - "127.0.0.1:6333:6333"   # dashboard: http://localhost:6333/dashboard
+    deploy:
+      resources:
+        limits:
+          memory: 2g
 
+  # Local embeddings (Hugging Face text-embeddings-inference). The first start downloads the model.
+  # CPU by default; docker-compose.gpu.yml switches it to an NVIDIA GPU.
+  embeddings:
+    image: ${TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cpu-1.9}
+    restart: unless-stopped
+    command: ["--model-id", "${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}", "--max-client-batch-size", "64"]
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - hf_models:/data
+    deploy:
+      resources:
+        limits:
+          memory: 6g
+
+  # Local model to answer without Claude. Enabled with the "ollama" profile (COMPOSE_PROFILES in .env),
+  # but only when there is no Claude API key: with a key the profile becomes "ollama-with-claude".
+  # To run both, use COMPOSE_PROFILES=ollama,ollama-with-claude and OLLAMA_WITH_CLAUDE=true.
   ollama:
-    image: ollama/ollama:latest
+    image: ollama/ollama:0.40.5
+    profiles: ["ollama${ANTHROPIC_API_KEY:+-with-claude}${GENRIC_RAG_ANTHROPIC_API_KEY:+-with-claude}"]
     restart: unless-stopped
     volumes:
       - ollama_models:/root/.ollama
     ports:
       - "127.0.0.1:11434:11434"
     environment:
-      OLLAMA_KEEP_ALIVE: 30m
-      # Caché KV cuantizada: reduce a la mitad la VRAM del contexto (necesario con 8 GB)
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
+      # Quantized KV cache: halves the VRAM used by the context
       OLLAMA_FLASH_ATTENTION: ${OLLAMA_FLASH_ATTENTION:-1}
       OLLAMA_KV_CACHE_TYPE: ${OLLAMA_KV_CACHE_TYPE:-q8_0}
     healthcheck:
@@ -26,11 +68,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 30
-    # GPU NVIDIA: opcional, se activa con docker-compose.gpu.yml (ver COMPOSE_FILE en .env.example)
 
-  # Descarga los modelos (solo la primera vez tarda) y termina.
+  # Pulls the Ollama model (only slow the first time) and exits.
   ollama-init:
-    image: ollama/ollama:latest
+    image: ollama/ollama:0.40.5
+    profiles: ["ollama${ANTHROPIC_API_KEY:+-with-claude}${GENRIC_RAG_ANTHROPIC_API_KEY:+-with-claude}"]
     depends_on:
       ollama:
         condition: service_healthy
@@ -38,39 +80,48 @@ services:
       OLLAMA_HOST: http://ollama:11434
     entrypoint: ["/bin/sh", "-c"]
     command:
-      - ollama pull ${EMBED_MODEL:-bge-m3} && ollama pull ${OLLAMA_CHAT_MODEL:-qwen3:8b}
+      - ollama pull ${OLLAMA_CHAT_MODEL:-qwen3:4b-instruct-2507-q4_K_M}
     restart: "no"
 
   rag-app:
     build: ./app
+    image: genric-rag-app:local
     restart: unless-stopped
     depends_on:
+      postgres:
+        condition: service_healthy
       qdrant:
+        condition: service_started
+      embeddings:
         condition: service_started
       ollama-init:
         condition: service_completed_successfully
+        required: false
     env_file:
       - path: .env
         required: false
     environment:
       QDRANT_URL: http://qdrant:6333
-      OLLAMA_URL: http://ollama:11434
+      EMBEDDING_URL: http://embeddings:80
       DOCS_PATH: /data/docs
-      STATE_DIR: /data/state
-      # Secretos: se leen de las variables de entorno del host (o de .env si se definen allí)
+      DATABASE_URL: postgresql://rag:${POSTGRES_PASSWORD:-${GENRIC_RAG_POSTGRES_PASSWORD:-rag-local}}@postgres:5432/rag
+      # Secrets: read from the host environment variables (or from .env if defined there)
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-${GENRIC_RAG_ANTHROPIC_API_KEY:-}}
       CONFLUENCE_EMAIL: ${CONFLUENCE_EMAIL:-${JIRA_EMAIL:-}}
       CONFLUENCE_TOKEN: ${CONFLUENCE_TOKEN:-${JIRA_TOKEN:-}}
     volumes:
-      - ${DOCS_HOST_PATH:-./documentos}:/data/docs:ro
-      - rag_state:/data/state
+      - ${DOCS_HOST_PATH:-./documents}:/data/docs:ro
     ports:
       - "127.0.0.1:${APP_PORT:-8000}:8000"
+    deploy:
+      resources:
+        limits:
+          memory: 3g
 
-  # Túnel público para pruebas (opcional): docker compose --profile ngrok up -d
-  # Protegido con usuario/contraseña (NGROK_BASIC_AUTH). URL pública: http://localhost:4040
+  # Public tunnel for testing (optional): docker compose --profile ngrok up -d
+  # Protected with user/password (NGROK_BASIC_AUTH). Public URL: http://localhost:4040
   ngrok:
-    image: ngrok/ngrok:latest
+    image: ngrok/ngrok:3.39.11-alpine
     profiles: ["ngrok"]
     restart: on-failure:3
     depends_on:
@@ -80,14 +131,14 @@ services:
       NGROK_BASIC_AUTH: ${NGROK_BASIC_AUTH:-}
       NGROK_DOMAIN: ${NGROK_DOMAIN:-}
     entrypoint: ["/bin/sh", "-c"]
-    # Genera la config (panel en 0.0.0.0:4040) y la traffic policy de usuario/contraseña.
-    # Nunca abre el túnel sin protección.
+    # Writes the config (dashboard on 0.0.0.0:4040) and the user/password traffic policy.
+    # It never opens the tunnel without protection.
     command:
       - |
-        [ -n "$$NGROK_AUTHTOKEN" ] || { echo "ERROR: define la variable NGROK_AUTHTOKEN"; exit 1; }
+        [ -n "$$NGROK_AUTHTOKEN" ] || { echo "ERROR: set the NGROK_AUTHTOKEN variable"; exit 1; }
         case "$$NGROK_BASIC_AUTH" in
           *:????????*) ;;
-          *) echo "ERROR: define NGROK_BASIC_AUTH=usuario:contraseña (mínimo 8 caracteres) en .env"; exit 1 ;;
+          *) echo "ERROR: set NGROK_BASIC_AUTH=user:password (at least 8 characters) in .env"; exit 1 ;;
         esac
         printf 'version: 3\nagent:\n  web_addr: 0.0.0.0:4040\n' > /tmp/ngrok.yml
         printf 'on_http_request:\n  - actions:\n      - type: basic-auth\n        config:\n          credentials:\n            - "%s"\n' "$$NGROK_BASIC_AUTH" > /tmp/policy.yml
@@ -96,6 +147,7 @@ services:
       - "127.0.0.1:4040:4040"
 
 volumes:
+  postgres_data:
   qdrant_data:
+  hf_models:
   ollama_models:
-  rag_state:

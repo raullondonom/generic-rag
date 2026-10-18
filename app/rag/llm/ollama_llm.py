@@ -10,6 +10,7 @@ from ..config import Settings
 
 class OllamaLLM:
     name = "ollama"
+    remote = False
 
     def __init__(self, settings: Settings):
         self.model = settings.ollama_chat_model
@@ -32,7 +33,7 @@ class OllamaLLM:
         async with self._client.stream("POST", "/api/chat", json=self._body(system, messages, True, self.think)) as resp:
             if resp.status_code != 200:
                 detail = (await resp.aread()).decode(errors="replace")
-                raise RuntimeError(f"Ollama respondió {resp.status_code}: {detail[:300]}")
+                raise RuntimeError(f"Ollama answered {resp.status_code}: {detail[:300]}")
             async for line in resp.aiter_lines():
                 if not line.strip():
                     continue
