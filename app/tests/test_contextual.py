@@ -126,6 +126,12 @@ def test_notes_are_embedded_but_the_answer_reads_the_chunk():
     assert state.saved["version"] == "v1+ctx:abc"
 
 
+def test_a_chunk_the_model_gives_no_note_for_does_not_force_a_retry():
+    embedder, store, state, _ = index(["note one", ""])
+    assert "search_note" not in store.payloads[1]
+    assert state.saved["version"] == "v1+ctx:abc"
+
+
 def test_a_document_missing_notes_is_retried_on_the_next_sync():
     embedder, store, state, _ = index(["note one", None])
     assert "search_note" not in store.payloads[1]

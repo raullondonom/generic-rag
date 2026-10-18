@@ -76,7 +76,8 @@ class Contextualizer:
         return VERSION_MARK + _sha(f"{PROMPT_VERSION}|{self.model}|{self.system()}")[:10]
 
     def notes(self, title: str, context: str, items: list[tuple[str, str, str]]) -> list[str | None]:
-        """One note per (section, previous text, chunk); None where it could not be written."""
+        """One note per (section, previous text, chunk): "" when the model gave none (refusal, empty;
+        final and cached) and None when it could not be written now (error, budget; retried later)."""
         system = self.system()
         signature = _sha(f"{PROMPT_VERSION}|{self.model}|{system}")
         keys = [_sha(f"{signature}|{title}|{context}|{section}|{previous}|{piece}")
@@ -103,7 +104,7 @@ class Contextualizer:
 
             with ThreadPoolExecutor(self.workers) as pool:
                 written = list(pool.map(write, todo))
-            new = {keys[i]: note for i, note in zip(todo, written) if note}
+            new = {keys[i]: note for i, note in zip(todo, written) if note is not None}
             self._save(new)
             found.update(new)
         return [found.get(key) for key in keys]
@@ -119,9 +120,10 @@ class Contextualizer:
         )
         self.spend.record(final, "context")
         if final.stop_reason == "refusal":
-            return None
+            log.info("The model gave no note for a chunk (refusal): indexed without one")
+            return ""
         text = " ".join(b.text for b in final.content if b.type == "text").strip()
-        return " ".join(text.split())[:1000] or None
+        return " ".join(text.split())[:1000]
 
     def _load(self, keys: list[str]) -> dict[str, str]:
         if not keys:

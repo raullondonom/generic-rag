@@ -78,7 +78,7 @@ class Indexer:
                     payload["search_note"] = note
             # The note is embedded (and full-text indexed) with the chunk; the AI reads the chunk only
             to_embed = [f"{note}\n\n{chunk}" if note else chunk for chunk, note in zip(chunks, notes)]
-            if not all(notes):
+            if any(note is None for note in notes):
                 version = strip_mark(version)  # retried on the next sync (the notes written are cached)
         vectors = self.embedder.embed_documents(to_embed)
         # BM25 of the same text as the embedding (chunk and note): the lexical half of the hybrid search
