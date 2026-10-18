@@ -94,6 +94,52 @@ Optional:
 - **Only Claude, no local model**: remove `ollama` from `COMPOSE_PROFILES` and leave `OLLAMA_URL` empty.
 - **Spanish UI and prompts**: `LANGUAGE=es`.
 
+## Start, stop and update (basic and high availability)
+
+Two ways to run the same application. Use **one at a time**: both use the same Postgres volume and the same service names, so stop one before starting the other. Conversations and ratings are kept when you switch; the vector index is not shared (see the note on switching).
+
+| | Basic (default) | High availability |
+|---|---|---|
+| Compose files | `docker-compose.yml` | `docker-compose.yml` + `docker-compose.ha.yml` |
+| Entry point | <http://localhost:8000> | <http://localhost:8080> (`HA_PORT`) |
+| Services | app, Postgres, Qdrant, embeddings, Ollama | Nginx, 2 API, workers, scheduler, queue and cache (Redis), Qdrant ×3, embeddings ×2-3, Postgres |
+| RAM (CPU only, without the local model) | about 3 GB (measured) | about 8-9 GB (estimated, not measured under load) |
+| GPU | `./scripts/compose.sh` detects it | Embeddings nodes run on the CPU (`docker-compose.gpu.yml` targets the `embeddings` service, which HA replaces); not tested with a GPU |
+
+**Basic**
+
+```bash
+docker compose up -d --build            # start (or ./scripts/compose.sh up -d to detect the GPU)
+docker compose ps                       # state of every service
+docker compose logs -f rag-app          # logs
+docker compose down                     # stop; keeps the data (volumes)
+```
+
+**High availability**
+
+```bash
+HA="-f docker-compose.yml -f docker-compose.ha.yml"
+docker compose $HA up -d --build        # start
+docker compose $HA ps                   # every service must be "healthy"
+docker compose $HA logs -f worker       # logs of one service (api-1, scheduler, edge, qdrant-1...)
+docker compose $HA down                 # stop; keeps the data (volumes)
+```
+
+- Options: `--scale worker=4` for more workers, `--profile embeddings3` for a third embeddings node. The `HA_*` variables and the sizes are in `.env.example`.
+- The first start downloads the embeddings model (about 1.2 GB) into an empty volume and `up` can end with `embeddings-1 is unhealthy` while it downloads. The container keeps going: wait until `ps` shows it `healthy` and run `up -d` again.
+- Open <http://localhost:8080/health/ready> to check that Postgres and the queue answer. The administration panel is at `/admin` on the same port.
+- To measure performance in isolation, use a separate project so nothing of the other deployment is touched, and raise the Nginx limits (a single load generator shares one IP):
+  ```bash
+  HA_RATE_ASK=1000r/s HA_BURST_ASK=1000 HA_RATE_API=1000r/s HA_BURST_API=1000 HA_CONN_PER_IP=5000 \
+    docker compose -p ha-perf $HA up -d --build
+  docker compose -p ha-perf $HA down -v     # removes only this project, including its volumes
+  ```
+  `COMPOSE_PROFILES=` (empty) skips Ollama; `DRY_RUN=true` exercises everything except the AI call.
+
+**Updating Qdrant one node at a time (HA)**: change the image in `docker-compose.ha.yml` (the `x-qdrant` block), then for each node in turn run `docker compose $HA up -d --no-deps qdrant-1`, wait until `docker compose $HA ps` shows it `healthy`, and continue with `qdrant-2` and `qdrant-3`. Answers and indexing keep working; the node catches up by itself when it returns.
+
+**Switching from basic to HA**: `docker compose down` first. The new Qdrant nodes start empty, so the first start indexes every document again (embedding time). To avoid it, restore a snapshot of the basic Qdrant into the cluster and replicate its shard to the other two nodes; this works, but it is manual and it is not automated. Start with the same `.env` and avoid indexing from the documents folder until you have checked the result (`FOLDER_SCAN_INTERVAL=0`): in a test, a differing configuration made the first sync reprocess documents. Going back to basic: `docker compose $HA down`, then `docker compose up -d`.
+
 ## Choosing the local model
 
 `app/bench/llm_benchmark.py` compares Ollama models on your hardware with a fixed dataset: every question gets all the documents of a fictional company as context (with distractors), and the score is deterministic, with no AI judge. It counts expected facts found, `[n]` citations, and saying "I can't find it" when the answer is not in the documents. It also measures time to first token, tokens per second and VRAM.
@@ -315,10 +361,7 @@ curl -N -X POST http://localhost:8000/api/chat -H "Content-Type: application/jso
 `docker-compose.yml` runs one of everything and stays the default. `docker-compose.ha.yml` is a layer over it that
 puts a balancer in front, keeps every question in a durable queue and replicates what can fail:
 
-```bash
-docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d --build
-# optional third embeddings node (CPU server with room): add --profile embeddings3
-```
+Start it with the commands in [Start, stop and update](#start-stop-and-update-basic-and-high-availability).
 
 ```
 edge (Nginx: limits, SSE) ─► api-1, api-2 ─► redis-queue ─► worker ×2 ─► nginx-internal ─► embeddings ×2-3
@@ -334,8 +377,6 @@ scheduler (indexing + /admin, exactly one) · postgres
 - **Roles (`ROLE`).** `api` answers, `worker` consumes the queue, `scheduler` indexes, reviews sources and serves `/admin`; `all` (the default without this file) does everything in one process. `/api/reindex` and `/api/control/check` answer 409 outside the scheduler. Keep exactly one scheduler.
 - **Health.** `/health/live` (process up) and `/health/ready` (Postgres and queue); `/health` is the full check.
 - **Backups.** The copies protect against a node failing, not against a deletion or losing the server: `./scripts/backup-ha.sh` dumps Postgres and snapshots Qdrant (run it from cron). The index can also be rebuilt from `documents/`.
-
-Moving from the single-node deployment: the new Qdrant nodes start empty, so the first start indexes every document again (embedding time). Postgres is shared, so conversations are kept. The old `rag-app`, `qdrant` and `embeddings` containers are not started by the HA file; remove them with `docker compose down` first if they were running.
 
 What this does not give you: one server is still one point of failure (power, disk, host). To remove it, move some nodes to a second and third machine (Qdrant and Redis need to be reachable from them); the design does not change.
 
