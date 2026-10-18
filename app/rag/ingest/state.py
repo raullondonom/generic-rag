@@ -56,6 +56,13 @@ class StateStore:
         self.db.set_setting(INDEX_COLLECTION_KEY, collection)
         return True
 
+    def clear_documents(self) -> int:
+        """Forgets what was indexed (the index is gone or empty): the next sync indexes everything again."""
+        with self.db.transaction() as c:
+            n = c.execute("DELETE FROM documents").rowcount
+            c.execute("DELETE FROM sync_runs")
+        return n
+
     def list(self, source: str | None = None, status: str | None = None, limit: int = 500) -> list[dict]:
         sql, args = "SELECT * FROM documents WHERE true", []
         if source:

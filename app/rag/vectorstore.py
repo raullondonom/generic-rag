@@ -6,6 +6,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 
+import httpx
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qm
 
@@ -54,6 +55,10 @@ class VectorStore:
         self.collection = settings.collection_name
         self.language = normalize(settings.language)
         self.sparse = settings.sparse_search
+        self.replication = max(settings.qdrant_replication_factor, 1)
+        self.write_consistency = min(max(settings.qdrant_write_consistency, 1), self.replication)
+        self.shards = max(settings.qdrant_shards, 1)
+        self.url = settings.qdrant_url.rstrip("/")
         self.client = client or QdrantClient(url=settings.qdrant_url, timeout=60)
         self._ready = False
 
@@ -61,9 +66,13 @@ class VectorStore:
         if self._ready:
             return
         if not self.client.collection_exists(self.collection):
+            self.require_peers()
             self.client.create_collection(
                 self.collection,
                 vectors_config=qm.VectorParams(size=dim, distance=qm.Distance.COSINE),
+                shard_number=self.shards,
+                replication_factor=self.replication,
+                write_consistency_factor=self.write_consistency,
                 # BM25: the points carry the term weights, Qdrant applies the IDF of the collection
                 sparse_vectors_config={SPARSE: qm.SparseVectorParams(modifier=qm.Modifier.IDF)}
                 if self.sparse else None,
@@ -72,6 +81,17 @@ class VectorStore:
                 self.client.create_payload_index(self.collection, field, qm.PayloadSchemaType.KEYWORD)
             self.ensure_text_index()
         self._ready = True
+
+    def require_peers(self) -> None:
+        """A collection with N copies needs N nodes up when it is created; otherwise wait (the sync retries)."""
+        if self.replication <= 1:
+            return
+        status = httpx.get(f"{self.url}/cluster", timeout=10)
+        status.raise_for_status()
+        peers = len(status.json()["result"].get("peers") or {})
+        if peers < self.replication:
+            raise RuntimeError(f"Qdrant cluster has {peers} node(s) up and {self.replication} are needed "
+                               "to create the collection: waiting for the others")
 
     def exists(self) -> bool:
         return self.client.collection_exists(self.collection)

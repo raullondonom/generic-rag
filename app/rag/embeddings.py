@@ -6,9 +6,14 @@ instruction; documents are embedded as-is (classic e5 uses "query: " / "passage:
 
 from __future__ import annotations
 
+import random
+import time
+
 import httpx
 
 from .config import Settings
+
+RETRIES = 4
 
 _QUERY_PREFIXES = {
     "qwen/qwen3-embedding": "Instruct: {instruction}\nQuery:",
@@ -50,12 +55,27 @@ class Embedder:
         resp.raise_for_status()
         return resp.json()
 
+    def _post(self, batch: list[str]) -> list[list[float]]:
+        """A node that fails or is overloaded (429, 5xx) is retried: behind a balancer the retry usually lands on
+        another one. Other errors (4xx) are not transient."""
+        for attempt in range(RETRIES):
+            try:
+                resp = self._client.post("/embed", json={"inputs": batch, "truncate": True})
+                if resp.status_code != 429 and resp.status_code < 500:
+                    resp.raise_for_status()
+                    return resp.json()
+                error: Exception = httpx.HTTPStatusError(str(resp.status_code), request=resp.request, response=resp)
+            except (httpx.TransportError, httpx.TimeoutException) as e:
+                error = e
+            if attempt == RETRIES - 1:
+                raise error
+            time.sleep(min(0.5 * 2 ** attempt, 4) * (0.5 + random.random()))
+        raise AssertionError("unreachable")
+
     def _embed(self, texts: list[str]) -> list[list[float]]:
         vectors: list[list[float]] = []
         for i in range(0, len(texts), self.batch_size):
-            resp = self._client.post("/embed", json={"inputs": texts[i:i + self.batch_size], "truncate": True})
-            resp.raise_for_status()
-            vectors.extend(resp.json())
+            vectors.extend(self._post(texts[i:i + self.batch_size]))
         return vectors
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
