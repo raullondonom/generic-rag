@@ -273,6 +273,22 @@ def test_user_context_reaches_preparation_and_answer_and_boosts_its_documents():
     assert [w for w in service.store.wheres if w] == [{"jurisdiction": "North"}] * 2
 
 
+def test_boosted_documents_must_compete_with_the_best_plain_hits():
+    def local(score, name):
+        return Hit(score=score, text="local", payload={"doc_id": f"folder:{name}", "chunk_index": 0, "title": name,
+                                                       "source": "folder", "jurisdiction": "North"})
+
+    context = [{"id": "region", "label": "Region", "value": "North", "field": "jurisdiction"}]
+    for score, kept in ((0.7, False), (0.85, True)):
+        service, _, _ = make([hit(0.9)])
+        # Plain searches only return the general document; the boosted ones, the local one
+        plain = [hit(0.9)]
+        boosted = [local(score, "local.pdf")]
+        service.store.search = lambda v, limit, excluded=None, where=None, text=None: boosted if where else plain
+        sources = next(d for k, d in run(service, "Opening hours?", context=context) if k == "sources")
+        assert ("local.pdf" in [s["title"] for s in sources]) is kept
+
+
 def test_admin_choice_overrides_the_default_provider():
     service, _, _ = make([hit(0.9)])
     other = FakeLLM()

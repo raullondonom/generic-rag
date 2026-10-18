@@ -148,9 +148,14 @@ class ChatService:
         vectors = await asyncio.to_thread(self.embedder.embed_queries, queries)
         candidates = self.settings.top_k * 3
         excluded = self.settings.excluded_status_list
-        searches = [(v, None) for v in vectors] + [(v, where) for where in boosts or [] for v in vectors[:2]]
-        results = [await asyncio.to_thread(self.store.search, v, candidates, excluded, where)
-                   for v, where in searches]
+        results = [await asyncio.to_thread(self.store.search, v, candidates, excluded) for v in vectors]
+        # A boosted search only brings chunks that compete with the best ones of the plain searches,
+        # so the chosen value's documents about other subjects do not take the place of relevant ones
+        bar = max((hits[0].score for hits in results if hits), default=0.0) - self.settings.score_margin
+        for where in boosts or []:
+            for v in vectors[:2]:
+                hits = await asyncio.to_thread(self.store.search, v, candidates, excluded, where)
+                results.append([h for h in hits if h.score >= bar])
         keyword_results = []
         for kw in keywords or []:
             vector = vectors[query_prep.query_for_keyword(queries, kw)]
