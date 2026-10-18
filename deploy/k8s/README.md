@@ -122,8 +122,9 @@ kubectl -n transit-chat get hpa
 ## Configuration and secrets
 
 - **`base/configmap.yaml`** — non-secret settings (model, retrieval, chunking, indexing,
-  language). Changing it requires a rollout: `kubectl -n transit-chat rollout restart
-  deployment/api deployment/scheduler`.
+  language). Changing it does not restart the pods: after editing, run
+  `RESTART=1 ./deploy/k8s/scripts/deploy.sh` (avoid it while the scheduler is indexing) or
+  `kubectl -n transit-chat rollout restart deployment/api deployment/scheduler`.
 - **`rag-secrets`** — `POSTGRES_PASSWORD`, `ADMIN_TOKEN`, `ANTHROPIC_API_KEY`,
   `CONFLUENCE_TOKEN`, `HF_TOKEN`. `ADMIN_TOKEN` is required: without it the app only accepts
   admin requests from loopback, which no longer matches a request through nginx.
@@ -177,6 +178,29 @@ kubectl -n transit-chat patch deployment embeddings --type=strategic \
 Choose the TEI tag that matches the GPU (89, 86, turing, hopper) in the patch.
 
 ## Operations
+
+### Indexing status
+
+```bash
+# Running, finished or failed, with the last message ("N procesados, ...").
+kubectl -n transit-chat exec postgres-0 -- psql -U rag -d rag -c \
+  "select source, status, started_at, finished_at, message from sync_runs;"
+
+# Documents by status and chunks written.
+kubectl -n transit-chat exec postgres-0 -- psql -U rag -d rag -c \
+  "select status, count(*), sum(chunks) from documents group by status;"
+
+# Same view as the administration panel, plus the vector count.
+curl -s -H "X-Admin-Token: $ADMIN_TOKEN" http://<entry>/api/admin/status \
+  | jq '{chunks_in_index, sources, folder}'
+
+# Progress while it runs.
+kubectl -n transit-chat logs -f deployment/scheduler | grep -E "Indexed|Folder:"
+```
+
+`sync_runs.status` is `running` while the sync is in progress, `ok` when it finished and
+`error` when it failed. `folder.running` in `/api/admin/status` answers the same question.
+Errors appear per document in `/api/documents?status=error` (with the `X-Admin-Token` header).
 
 ```bash
 # Update the application image

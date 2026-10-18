@@ -79,22 +79,18 @@ spec:
               path: /health
               port: http
             periodSeconds: 10
-            timeoutSeconds: 5
+            timeoutSeconds: 10
             failureThreshold: 60
+          # No liveness probe: while a full embedding batch uses every CPU, /health can
+          # exceed a short timeout. Restarting the model in the middle of an index loses
+          # progress and leaves documents in error. Readiness is tolerant for the same reason.
           readinessProbe:
             httpGet:
               path: /health
               port: http
-            periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 3
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: http
-            periodSeconds: 20
-            timeoutSeconds: 5
-            failureThreshold: 3
+            periodSeconds: 15
+            timeoutSeconds: 15
+            failureThreshold: 6
           resources:
             requests:
               cpu: "2"

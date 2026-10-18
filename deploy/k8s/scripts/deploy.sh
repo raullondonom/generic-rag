@@ -44,9 +44,13 @@ kubectl -n "$NAMESPACE" delete job ollama-pull --ignore-not-found >/dev/null
 echo "Applying overlay '$OVERLAY'..."
 kubectl apply -k "$REPO_ROOT/deploy/k8s/overlays/$OVERLAY"
 
-# ConfigMap values are read at pod start.
-kubectl -n "$NAMESPACE" rollout restart \
-  deployment/api deployment/scheduler deployment/embeddings deployment/nginx >/dev/null
+# ConfigMap values are read at pod start. Restarting is opt-in because it can interrupt an
+# indexing run (use it after changing the ConfigMap, when the scheduler is idle):
+#   RESTART=1 ./deploy/k8s/scripts/deploy.sh
+if [ "${RESTART:-0}" = 1 ]; then
+  kubectl -n "$NAMESPACE" rollout restart \
+    deployment/api deployment/scheduler deployment/embeddings deployment/nginx >/dev/null
+fi
 
 for target in \
   statefulset/postgres \

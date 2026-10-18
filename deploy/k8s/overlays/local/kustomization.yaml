@@ -9,3 +9,7 @@ patches:
     target:
       kind: ConfigMap
       name: rag-config
+  - path: patch-embeddings.yaml
+    target:
+      kind: Deployment
+      name: embeddings

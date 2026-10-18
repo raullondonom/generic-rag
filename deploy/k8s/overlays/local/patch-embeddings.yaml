@@ -1,0 +1,18 @@
+# The local kind node has 16 CPUs. Give TEI more room so the first index of a real
+# subset is not limited to 4 threads; RAYON_NUM_THREADS follows limits.cpu.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: embeddings
+spec:
+  template:
+    spec:
+      containers:
+        - name: tei
+          resources:
+            requests:
+              cpu: "4"
+              memory: 2Gi
+            limits:
+              cpu: "8"
+              memory: 8Gi
