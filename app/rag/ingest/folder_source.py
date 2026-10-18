@@ -33,14 +33,19 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+MIN_OCR_CHARS = 200  # an OCR file without page markers needs at least this much text to be used
 PAGE_MARKER = re.compile(r"^--- (?:p[aá]gina|page) (\d+)(?: (?:de|of) \d+)? ---[ \t]*$", re.IGNORECASE | re.MULTILINE)
 
 
 def ocr_sections(text: str, language: str) -> list[Section]:
     """OCR text split by its page markers ("--- Página 3 de 10 ---"); the header before the first one is dropped."""
+    # Files written on Windows end lines with CRLF: "$" would only match the very last marker
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     parts = PAGE_MARKER.split(text)
     if len(parts) == 1:
-        return [Section(clean_text(text))] if text.strip() else []
+        # No page markers: the whole text, unless it is just a header with no recognized content
+        body = clean_text(text)
+        return [Section(body)] if len(re.sub(r"\s", "", body)) >= MIN_OCR_CHARS else []
     sections = []
     for i in range(1, len(parts) - 1, 2):
         body = clean_text(parts[i + 1])
@@ -116,11 +121,14 @@ class FolderSource:
         return digest
 
     def _sections(self, path: Path, ocr_text: Path | None, context: list[str]) -> list[Section]:
-        if ocr_text is None:
-            return extract(path, self.opts)
-        # Scanned PDF: its OCR text is indexed instead, and the citation still opens the PDF
-        context.append(t(self.lang, "ctx_ocr"))
-        return ocr_sections(decode_bytes(ocr_text.read_bytes()), self.lang)
+        if ocr_text is not None:
+            # Scanned PDF: its OCR text is indexed instead, and the citation still opens the PDF
+            sections = ocr_sections(decode_bytes(ocr_text.read_bytes()), self.lang)
+            if sections:
+                context.append(t(self.lang, "ctx_ocr"))
+                return sections
+            log.warning("OCR text of %s has no usable text: reading the PDF instead", path.name)
+        return extract(path, self.opts)
 
     def _process(self, path: Path, rel: str, info: dict, full: bool, sidecar: str = "") -> int:
         """Indexes one file if it is new or changed. Returns 1 if it was (re)processed."""
@@ -140,7 +148,8 @@ class FolderSource:
                 return 0
             version = self._version(path, rel)
             if ocr_text is not None:
-                version += "+ocr:" + self._version(ocr_text, rel + sidecar)[:16]
+                # "ocr2": OCR parsing fixed for CRLF files; older OCR versions get reindexed automatically
+                version += "+ocr2:" + self._version(ocr_text, rel + sidecar)[:16]
             if info:
                 version += ":" + metadata_version(info)  # a registry edit reindexes this document only
             if not full and self.indexer.is_current(doc_id, version):

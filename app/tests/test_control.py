@@ -219,8 +219,28 @@ def test_ocr_text_replaces_its_scanned_pdf(corpus, monkeypatch):
     kw = indexer.indexed["folder:02_decrees/old.pdf"]
     assert [(s.location, s.text) for s in kw["sections"]] == [("página 1", "Artículo uno"), ("página 2", "Artículo dos")]
     assert kw["context"][-1].startswith("Texto obtenido por OCR")
-    assert "+ocr:" in kw["version"]
+    assert "+ocr2:" in kw["version"]
     assert kw["location"] == "02_decrees/old.pdf"  # the citation opens the original PDF
+
+
+def test_ocr_text_with_windows_line_endings():
+    from rag.ingest.folder_source import ocr_sections
+
+    text = ("Texto obtenido por OCR de: a.pdf\r\nMétodo: OCR\r\n\r\n--- Página 1 de 3 ---\r\nuno\r\n"
+            "\r\n--- Página 2 de 3 ---\r\ndos\r\n\r\n--- Página 3 de 3 ---\r\ntres\r\n")
+    assert [(s.location, s.text) for s in ocr_sections(text, "es")] == [
+        ("página 1", "uno"), ("página 2", "dos"), ("página 3", "tres")]
+
+
+def test_empty_ocr_text_falls_back_to_the_pdf(corpus, monkeypatch):
+    monkeypatch.setattr("rag.ingest.folder_source.extract", lambda path, opts: [Section("pdf text layer")])
+    (corpus / "02_decrees" / "old.ocr.txt").write_text("Texto obtenido por OCR de: x\n", encoding="utf-8")
+    indexer = FakeIndexer()
+    source = FolderSource(Settings(_env_file=None, docs_path=str(corpus)), indexer)
+    source._process(corpus / "02_decrees" / "old.pdf", "02_decrees/old.pdf", {}, False, ".ocr.txt")
+    kw = indexer.indexed["folder:02_decrees/old.pdf"]
+    assert [s.text for s in kw["sections"]] == ["pdf text layer"]
+    assert not any("OCR" in line for line in kw["context"])
 
 
 def test_ocr_sidecar_can_be_turned_off(corpus):
