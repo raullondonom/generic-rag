@@ -91,7 +91,9 @@ class Settings(BaseSettings):
     context_model: str = ""  # empty = ANTHROPIC_FAST_MODEL
     context_workers: int = 8
     chunk_overlap: int = 400
-    history_turns: int = 0  # 0 = every question is an independent query
+    history_turns: int = 6  # previous turns sent to the AI; 0 = every question is an independent query
+    # free = Markdown at the model's choice; structured = short Answer / Basis / Conclusion for phones
+    answer_format: str = "free"
 
     # Statuses (lowercase, from the source registry) left out of the search, e.g. repealed documents
     exclude_statuses: str = "repealed,derogada,derogado"
@@ -141,6 +143,26 @@ class Settings(BaseSettings):
     cache_ttl_seconds: int = 86400
     db_pool_max: int = 8  # Postgres connections of this process
     cache_wait_seconds: int = 60  # an identical question being answered is awaited instead of repeated
+    # A question that matches it carries personal data and is never cached (case-insensitive regex).
+    # Default: long numbers (ID, phone, case) and e-mails; a collection can add its own, e.g. license plates.
+    cache_skip_pattern: str = r"\d{6,}|@"
+
+    @field_validator("answer_format")
+    @classmethod
+    def _check_answer_format(cls, value: str) -> str:
+        value = value.strip().lower()
+        if value not in ("free", "structured"):
+            raise ValueError("ANSWER_FORMAT must be free or structured")
+        return value
+
+    @field_validator("cache_skip_pattern")
+    @classmethod
+    def _check_cache_skip_pattern(cls, value: str) -> str:
+        try:
+            re.compile(value)
+        except re.error as e:
+            raise ValueError(f"CACHE_SKIP_PATTERN is not a valid regular expression: {e}") from e
+        return value
 
     @field_validator("role")
     @classmethod

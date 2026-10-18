@@ -13,6 +13,7 @@ AOF), the cache is a plain LRU.
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import json
 import logging
@@ -54,9 +55,6 @@ def valid_job_id(job_id: str) -> bool:
 
 # ---------------------------------------------------------------- cache keys
 
-_IDENTIFIER_RE = re.compile(r"\d{6,}|@|\b[a-z]{3}-?\d{3}\b|\b[a-z]{3}\d{2}[a-z]\b", re.I)  # "ley 769" has a space: not a plate
-
-
 def normalize_question(question: str) -> str:
     """Same question, same text: case, accents, spaces and the punctuation around it do not matter
     (on a phone people rarely type the accents)."""
@@ -65,9 +63,14 @@ def normalize_question(question: str) -> str:
     return re.sub(r"\s+", " ", text.casefold()).strip().strip("¿?¡!.,;: ")
 
 
-def has_identifier(question: str) -> bool:
-    """Long numbers (ID, phone, case), an e-mail or a license plate: that question is never cached."""
-    return bool(_IDENTIFIER_RE.search(question))
+@functools.lru_cache(maxsize=8)
+def _identifier_re(pattern: str) -> re.Pattern:
+    return re.compile(pattern, re.I)
+
+
+def has_identifier(question: str, pattern: str) -> bool:
+    """The question matches CACHE_SKIP_PATTERN (by default long numbers and e-mails): it is never cached."""
+    return bool(pattern) and bool(_identifier_re(pattern).search(question))
 
 
 def cache_key(question: str, context: list[dict], language: str, model: str, index_version: str) -> str:
@@ -474,7 +477,7 @@ async def forward_events(queue: JobQueue, job_id: str, events: AsyncIterator[tup
 def cacheable_key(chat, settings: Settings, question: str, conversation_id: str | None, provider: str | None,
                   context: list[dict], index_version: str) -> str | None:
     """None when this question must not be cached: it carries an identifier, or earlier turns shape the answer."""
-    if has_identifier(question) or (conversation_id and settings.history_turns > 0):
+    if has_identifier(question, settings.cache_skip_pattern) or (conversation_id and settings.history_turns > 0):
         return None
     try:
         llm = chat.pick_llm(provider)

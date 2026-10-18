@@ -1,3 +1,5 @@
+import pytest
+
 from rag import query_prep
 from rag.prompts import build_user_message, labels
 from rag.vectorstore import Hit
@@ -95,10 +97,39 @@ def test_system_prompt_mentions_confluence_only_when_enabled():
         assert "<" not in system_prompt(lang, confluence=True)
 
 
-def test_system_prompt_asks_for_answer_basis_and_conclusion_with_icons():
+def test_structured_format_asks_for_answer_basis_and_conclusion_with_icons():
     from rag.prompts import system_prompt
 
     for lang, labels_ in (("en", ("Answer", "Basis", "Conclusion")), ("es", ("Respuesta", "Sustento", "Conclusión"))):
-        prompt = system_prompt(lang)
+        prompt = system_prompt(lang, answer_format="structured")
         for icon, label in zip(("💡", "⚖️", "✅"), labels_):
             assert f"{icon} **{label}:**" in prompt
+        assert "rule 7" in prompt or "regla 7" in prompt  # the administrator's notes cannot change it
+
+
+def test_free_format_is_the_default_and_has_no_fixed_sections():
+    from rag.prompts import system_prompt
+
+    for lang in ("en", "es"):
+        prompt = system_prompt(lang)
+        assert prompt == system_prompt(lang, answer_format="free")
+        assert "Markdown" in prompt
+        assert "💡" not in prompt
+        assert "<" not in prompt
+        assert system_prompt(lang, answer_format="unknown") == prompt
+
+
+def test_independent_questions_are_announced_only_without_history():
+    from rag.prompts import system_prompt
+
+    assert "independent query" not in system_prompt("en")
+    assert "independent query" in system_prompt("en", independent=True)
+    assert "consulta independiente" in system_prompt("es", answer_format="structured", independent=True)
+
+
+def test_an_invalid_answer_format_is_rejected():
+    from rag.config import Settings
+
+    with pytest.raises(ValueError, match="ANSWER_FORMAT"):
+        Settings(answer_format="long")
+    assert Settings(answer_format=" Structured ").answer_format == "structured"

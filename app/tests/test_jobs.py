@@ -90,15 +90,27 @@ def test_cache_key_depends_on_question_context_model_and_index():
 
 
 @pytest.mark.parametrize("text,expected", [
-    ("¿Cuál es la multa por exceso de velocidad?", False),
-    ("mi cédula es 1234567890", True),
-    ("el carro ABC123 tiene comparendo", True),
-    ("moto ABC12D", True),
-    ("escríbeme a juan@correo.com", True),
-    ("artículo 131 de la ley 769", False),
+    ("What is the refund policy for a delayed delivery?", False),
+    ("my ID is 1234567890", True),
+    ("write to me at jane@example.com", True),
+    ("article 131 of law 769", False),
+    ("order ABC123 is late", False),  # the default knows nothing about the collection's own identifiers
 ])
-def test_has_identifier(text, expected):
-    assert has_identifier(text) is expected
+def test_has_identifier_with_the_default_pattern(text, expected):
+    assert has_identifier(text, Settings().cache_skip_pattern) is expected
+
+
+def test_a_collection_adds_its_own_identifiers_and_an_empty_pattern_caches_everything():
+    plates = r"\d{6,}|@|\b[a-z]{3}-?\d{3}\b|\b[a-z]{3}\d{2}[a-z]\b"
+    assert has_identifier("the car ABC123 has a ticket", plates)
+    assert has_identifier("motorbike abc12d", plates)
+    assert not has_identifier("article 131 of law 769", plates)  # a space: not a plate
+    assert not has_identifier("my ID is 1234567890", "")
+
+
+def test_an_invalid_cache_skip_pattern_is_rejected():
+    with pytest.raises(ValueError, match="CACHE_SKIP_PATTERN"):
+        Settings(cache_skip_pattern="(")
 
 
 # ---------------------------------------------------------------- queue
@@ -242,7 +254,7 @@ def test_questions_with_identifiers_are_not_cached():
         q, cache, chat = make_queue(fakeredis.FakeServer()), make_cache(fakeredis.FakeServer()), FakeChat()
         await q.setup()
         for _ in range(2):
-            job = await q.create("placa ABC123 comparendo", None, [], None)
+            job = await q.create("status of case 20241340750291", None, [], None)
             await run_worker(Worker(q, chat, settings(), cache, index_version=lambda: "v1"), q, job["job_id"])
         assert chat.calls == 2
 

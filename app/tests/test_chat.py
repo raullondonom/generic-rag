@@ -218,8 +218,8 @@ def test_follow_up_uses_saved_history_and_rewrites():
     assert len(convs.data[cid]) == 4
 
 
-def test_every_question_is_independent_by_default():
-    service, llm, convs = make([hit(0.9)])
+def test_every_question_is_independent_without_history_turns():
+    service, llm, convs = make([hit(0.9)], settings_kwargs={"history_turns": 0})
     cid = meta(run(service, "How is it deployed?"))["conversation_id"]
     run(service, "and in production?", cid)
     assert [m["role"] for m in sent_messages(llm)] == ["user"]
