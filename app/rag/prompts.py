@@ -256,3 +256,69 @@ def build_context_message(language: str, title: str, context: str, section: str,
         lines.append(f"\n{lb['previous']}: …{previous}")
     lines.append(f"\n{lb['chunk']}:\n{piece}")
     return "\n".join(lines)
+
+
+# After the search: how much each candidate helps to answer (see ChatService.rerank)
+RERANK_PROMPTS = {
+    "en": """You judge which excerpts of a document collection help answer a user's question. Do NOT answer it.
+Score every numbered excerpt:
+3 = it answers the question, or part of it, directly (the rule, value, deadline, procedure or fact asked);
+2 = needed to answer well (a condition, exception, definition, or the rule that applies to the user's context);
+1 = same subject, but it does not help to answer this question;
+0 = unrelated.
+Judge only what each excerpt says. When two excerpts give different versions of the same rule, the newer one \
+in force scores higher than an older text quoted in another document. Return a score for every excerpt.""",
+    "es": """Evalúas qué fragmentos de una colección de documentos ayudan a responder la pregunta de un usuario. \
+NO la respondas.
+Califica cada fragmento numerado:
+3 = responde la pregunta, o una parte, directamente (la regla, valor, plazo, procedimiento o dato preguntado);
+2 = necesario para responder bien (una condición, excepción, definición, o la norma que aplica al contexto del usuario);
+1 = mismo tema, pero no ayuda a responder esta pregunta;
+0 = no tiene relación.
+Juzga solo lo que dice cada fragmento. Si dos fragmentos dan versiones distintas de la misma regla, la más \
+reciente y vigente vale más que un texto antiguo citado en otro documento. Devuelve una calificación por fragmento.""",
+}
+
+RERANK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "scores": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"n": {"type": "integer"}, "score": {"type": "integer"}},
+                "required": ["n", "score"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["scores"],
+    "additionalProperties": False,
+}
+
+_RERANK_LABELS = {
+    "en": {"question": "Question", "interpretation": "Interpretation", "context": "User context",
+           "excerpts": "Excerpts", "note": "Summary"},
+    "es": {"question": "Pregunta", "interpretation": "Interpretación", "context": "Contexto del usuario",
+           "excerpts": "Fragmentos", "note": "Resumen"},
+}
+
+
+def rerank_prompt(language: str) -> str:
+    return RERANK_PROMPTS[normalize(language)]
+
+
+def build_rerank_message(language: str, question: str, standalone: str, context: list[dict] | None,
+                         excerpts: list[tuple[str, str, str]], max_chars: int = 2500) -> str:
+    """`excerpts`: (title and section, search note, text) of every candidate, numbered from 1."""
+    lb = _RERANK_LABELS[normalize(language)]
+    lines = [f"{lb['question']}: {question}"]
+    if standalone and standalone.strip() != question.strip():
+        lines.append(f"{lb['interpretation']}: {standalone}")
+    if context:
+        lines.append(f"{lb['context']}: {format_user_context(context)}")
+    lines.append(f"\n{lb['excerpts']}:")
+    for i, (title, note, text) in enumerate(excerpts, 1):
+        body = text if len(text) <= max_chars else text[:max_chars] + " […]"
+        lines.append(f"\n[{i}] {title}" + (f"\n{lb['note']}: {note}" if note else "") + f"\n{body}")
+    return "\n".join(lines)

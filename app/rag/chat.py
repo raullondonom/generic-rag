@@ -12,7 +12,8 @@ from .embeddings import Embedder
 from .i18n import t
 from .llm.base import LLM
 from . import query_prep, sparse
-from .prompts import PREPARE_SCHEMA, build_prepare_message, build_user_message, prepare_prompt, system_prompt
+from .prompts import (PREPARE_SCHEMA, RERANK_SCHEMA, build_prepare_message, build_rerank_message, build_user_message,
+                      prepare_prompt, rerank_prompt, system_prompt)
 from .query_prep import Prepared
 from .redaction import Redactor
 from .vectorstore import Hit, VectorStore
@@ -136,7 +137,8 @@ class ChatService:
         return [kw for n, kw in sorted(counted, key=lambda x: x[0]) if 0 < n <= limit]
 
     async def retrieve(self, queries: list[str], boosts: list[dict[str, str]] | None = None,
-                       keywords: list[str] | None = None) -> list[Hit]:
+                       keywords: list[str] | None = None, limit: int | None = None,
+                       per_doc: int | None = None) -> list[Hit]:
         """One search per query, fused (reciprocal rank fusion) with at most MAX_CHUNKS_PER_DOC per document.
 
         Each boost ({indexed field: value}, from the user's selectors) adds searches restricted to it with
@@ -170,9 +172,45 @@ class ChatService:
             for q in queries:
                 lexical.append(await asyncio.to_thread(self.store.search_sparse,
                                                        sparse.query_vector(q, self.language), BM25_DEPTH, excluded))
-        return query_prep.fuse(results, self.settings.top_k, self.settings.min_score, self.settings.score_margin,
-                               self.settings.max_chunks_per_doc, priority=keyword_results,
-                               priority_slots=self.settings.top_k // 2, rank_only=lexical)
+        limit = limit or self.settings.top_k
+        return query_prep.fuse(results, limit, self.settings.min_score, self.settings.score_margin,
+                               per_doc or self.settings.max_chunks_per_doc, priority=keyword_results,
+                               priority_slots=limit // 2, rank_only=lexical)
+
+    async def rerank(self, llm: LLM, question: str, prepared: Prepared, context: list[dict],
+                     hits: list[Hit]) -> list[Hit]:
+        """The fast model scores every candidate (0-3); the useful ones (2+) reach the answer, at most
+        TOP_K and MAX_CHUNKS_PER_DOC per document. On failure, the fused order is kept."""
+        top_k, per_doc = self.settings.top_k, self.settings.max_chunks_per_doc
+        excerpts = [(h.payload.get("title", "") + (f" ({h.payload['section']})" if h.payload.get("section") else ""),
+                     h.payload.get("search_note", ""), h.text) for h in hits]
+        scores: dict[int, int] = {}
+        if len(hits) > 1:
+            try:
+                data = await llm.complete_json(
+                    rerank_prompt(self.language),
+                    [{"role": "user", "content": build_rerank_message(self.language, question, prepared.standalone,
+                                                                      context, excerpts)}],
+                    RERANK_SCHEMA, purpose="rerank")
+                for item in (data or {}).get("scores", []):
+                    n, score = item.get("n"), item.get("score")
+                    if isinstance(n, int) and isinstance(score, int) and 1 <= n <= len(hits):
+                        scores[n - 1] = max(0, min(3, score))
+            except Exception:  # noqa: BLE001 - without the reranker the fused order is used
+                log.exception("Could not rerank the search results")
+        order = list(range(len(hits)))
+        if scores:
+            order.sort(key=lambda i: -scores.get(i, 0))  # stable: ties keep the fused order
+            useful = [i for i in order if scores.get(i, 0) >= 2]
+            # Nothing clearly useful: a few of the closest, so the answer can say what is missing
+            order = useful or [i for i in order if scores.get(i, 0) >= 1][:3] or order[:3]
+        chosen, count = [], {}
+        for i in order:
+            doc = hits[i].payload.get("doc_id")
+            if count.get(doc, 0) < per_doc and len(chosen) < top_k:
+                count[doc] = count.get(doc, 0) + 1
+                chosen.append(hits[i])
+        return chosen
 
     def _load_history(self, conversation_id: str) -> list[dict]:
         """Only complete question-answer pairs (a question whose answer failed is left out)."""
@@ -200,7 +238,11 @@ class ChatService:
         queries = prepared.search_queries(self.settings.search_queries_max)
         boosts = [{c["field"]: c["value"]} for c in context if c.get("field")]
         prepared.keywords = await self.specific_keywords(prepared.keywords)
-        return prepared, queries, await self.retrieve(queries, boosts, prepared.keywords)
+        if not self.settings.rerank:
+            return prepared, queries, await self.retrieve(queries, boosts, prepared.keywords)
+        candidates = await self.retrieve(queries, boosts, prepared.keywords, limit=self.settings.rerank_candidates,
+                                         per_doc=2 * self.settings.max_chunks_per_doc)
+        return prepared, queries, await self.rerank(llm, question, prepared, context, candidates)
 
     async def answer(self, question: str, conversation_id: str | None, provider: str | None,
                      context: list[dict] | None = None) -> AsyncIterator[tuple[str, object]]:

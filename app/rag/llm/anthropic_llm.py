@@ -21,6 +21,7 @@ log = logging.getLogger(__name__)
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 CACHE = {"type": "ephemeral"}
 PREPARE_MAX_TOKENS = 1500
+PURPOSE_LABELS = {"prepare": "purpose_rewrite", "rerank": "purpose_rerank"}
 
 
 def _chars(system: str, messages: list[dict]) -> int:
@@ -80,9 +81,10 @@ class AnthropicLLM:
         elif final.stop_reason == "max_tokens":
             yield t(self.language, "truncated")
 
-    async def complete_json(self, system: str, messages: list[dict], schema: dict) -> dict:
-        """Short structured answer from the fast model (preparing the search). {} if it is unusable."""
-        self.spend.check(self.fast_model, _chars(system, messages), PREPARE_MAX_TOKENS, t(self.language, "purpose_rewrite"))
+    async def complete_json(self, system: str, messages: list[dict], schema: dict, purpose: str = "prepare") -> dict:
+        """Short structured answer from the fast model (preparing or reranking the search). {} if unusable."""
+        self.spend.check(self.fast_model, _chars(system, messages), PREPARE_MAX_TOKENS,
+                         t(self.language, PURPOSE_LABELS.get(purpose, "purpose_rewrite")))
         final = await self._client.messages.create(
             model=self.fast_model,
             max_tokens=PREPARE_MAX_TOKENS,
@@ -90,7 +92,7 @@ class AnthropicLLM:
             messages=messages,
             output_config={"effort": "low", "format": {"type": "json_schema", "schema": schema}},
         )
-        self.spend.record(final, "prepare")
+        self.spend.record(final, purpose)
         if final.stop_reason in ("refusal", "max_tokens"):
             return {}
         text = next((b.text for b in final.content if b.type == "text"), "")
@@ -123,6 +125,7 @@ class DryRunLLM:
                       output_tokens=int(len(text) / CHARS_PER_TOKEN))
         self.spend.record_usage(self._real_model, "answer", usage, 0.0, simulated=True)
 
-    async def complete_json(self, system: str, messages: list[dict], schema: dict) -> dict:  # noqa: ARG002
+    async def complete_json(self, system: str, messages: list[dict], schema: dict,  # noqa: ARG002
+                            purpose: str = "prepare") -> dict:
         # Without a model the search cannot be prepared: it runs with the question as typed
         return {}

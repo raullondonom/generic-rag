@@ -46,7 +46,8 @@ class OllamaLLM:
                 if data.get("done"):
                     break
 
-    async def complete_json(self, system: str, messages: list[dict], schema: dict) -> dict:
+    async def complete_json(self, system: str, messages: list[dict], schema: dict,  # noqa: ARG002
+                            purpose: str = "prepare") -> dict:
         """Structured answer (Ollama's JSON schema output). {} if it is unusable."""
         body = {**self._body(system, messages, False, False), "format": schema}
         resp = await self._client.post("/api/chat", json=body)

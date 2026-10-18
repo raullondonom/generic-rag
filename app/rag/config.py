@@ -69,6 +69,10 @@ class Settings(BaseSettings):
     # Hybrid search: a BM25 sparse vector per chunk next to its embedding (finds exact terms and codes).
     # Changing it creates a new collection: everything is indexed again.
     sparse_search: bool = True
+    # Reranking: the fast model scores RERANK_CANDIDATES chunks of the hybrid search by how much each one
+    # helps to answer, and only the useful ones (up to TOP_K) reach the answering model
+    rerank: bool = False
+    rerank_candidates: int = 30
     search_keywords_max: int = 3
     # A keyword found in more than this share of the chunks is too generic to filter and is skipped
     keyword_max_share: float = 0.02

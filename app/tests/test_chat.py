@@ -1,4 +1,5 @@
 import asyncio
+import re
 
 from rag.chat import ChatService
 from rag.config import Settings
@@ -76,6 +77,7 @@ class FakeLLM:
         self.remote = remote
         self.fail = fail
         self.prepared = prepared
+        self.rerank_scores = []
         self.calls = []
         self.rewrites = []
 
@@ -86,7 +88,12 @@ class FakeLLM:
             raise RuntimeError("cut off")
         yield "[1]"
 
-    async def complete_json(self, system, messages, schema):
+    async def complete_json(self, system, messages, schema, purpose="prepare"):
+        if purpose == "rerank":
+            self.reranks = [*getattr(self, "reranks", []), messages[0]["content"]]
+            if isinstance(self.rerank_scores, Exception):
+                raise self.rerank_scores
+            return {"scores": self.rerank_scores}
         self.prepare_systems = [*getattr(self, "prepare_systems", []), system]
         self.rewrites.append(messages)
         if isinstance(self.prepared, Exception):
@@ -301,6 +308,27 @@ def test_bm25_joins_the_search_but_cannot_call_the_ai_alone():
     events = run(service, "What is the capital of France?")
     assert "".join(d for k, d in events if k == "token") == t("en", "no_context")
     assert llm.calls == []
+
+
+def test_reranker_keeps_only_the_useful_candidates_in_its_order():
+    hits = [Hit(score=0.9 - i / 100, text=f"text {n}", payload={"doc_id": f"folder:{n}", "chunk_index": 0,
+                                                              "title": n, "source": "folder"})
+            for i, n in enumerate("abcd")]
+    service, llm, _ = make(hits, settings_kwargs={"rerank": True})
+    llm.rerank_scores = [{"n": 1, "score": 1}, {"n": 2, "score": 2}, {"n": 3, "score": 0}, {"n": 4, "score": 3}]
+    events = run(service, "Refund deadline?")
+    # The candidates as numbered for the reranker; only the useful ones (3, then 2) reach the answer
+    numbered = dict(re.findall(r"^\[(\d)\] (\w)$", llm.reranks[0], re.M))
+    assert [s["title"] for s in next(d for k, d in events if k == "sources")] == [numbered["4"], numbered["2"]]
+    assert "Refund deadline?" in llm.reranks[0]
+
+
+def test_reranker_failure_keeps_the_fused_order():
+    hits = [hit(0.9, f"folder:{n}.md") for n in "ab"]
+    service, llm, _ = make(hits, settings_kwargs={"rerank": True})
+    llm.rerank_scores = RuntimeError("down")
+    events = run(service, "Refund deadline?")
+    assert len(next(d for k, d in events if k == "sources")) == 2
 
 
 def test_admin_choice_overrides_the_default_provider():
