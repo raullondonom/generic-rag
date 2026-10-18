@@ -285,6 +285,7 @@ To close it, run `docker compose stop ngrok`. Keep in mind that anyone who gets 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/api/config` | Look of the collection (`ui.json`), with the selectors and their options |
+| `POST` | `/api/chat/jobs` | HA: `{question, conversation_id?, context?}` → `202 {job_id, position}` (or `429`). `GET /api/chat/jobs/{id}` status, `GET /api/chat/jobs/{id}/events` SSE that resumes with `Last-Event-ID`, `DELETE` cancels |
 | `POST` | `/api/chat` | `{question, conversation_id?, context?}` → SSE stream with `meta` (includes the `conversation_id`), `sources`, `token`, `done` (includes the `message_id` and the `queries` searched) and `error` events. `context` maps selector ids to values; `provider` is honoured only for admin requests |
 | `POST` | `/api/conversations/lookup` | `{ids: [...]}` → summary of those conversations |
 | `GET` / `DELETE` | `/api/conversations/{id}` | Messages of a conversation (with their ratings) / delete it |
@@ -308,6 +309,48 @@ Example:
 curl -N -X POST http://localhost:8000/api/chat -H "Content-Type: application/json" \
   -d '{"question": "How do I add new documents?"}'
 ```
+
+## High availability (one server, no Kubernetes)
+
+`docker-compose.yml` runs one of everything and stays the default. `docker-compose.ha.yml` is a layer over it that
+puts a balancer in front, keeps every question in a durable queue and replicates what can fail:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d --build
+# optional third embeddings node (CPU server with room): add --profile embeddings3
+```
+
+```
+edge (Nginx: limits, SSE) ─► api-1, api-2 ─► redis-queue ─► worker ×2 ─► nginx-internal ─► embeddings ×2-3
+                              │ cache: redis-cache                                     └─► qdrant ×3 (cluster)
+scheduler (indexing + /admin, exactly one) · postgres
+```
+
+- **Nginx (`edge`)** is the only published port (`HA_PORT`, 8080). Per-IP limits (`HA_RATE_ASK`, `HA_BURST_ASK`, `HA_CONN_PER_IP`), no buffering of the streams and a JSON answer when everything is down. Raise the limits if many users share an IP (mobile networks, offices).
+- **Queue (Redis Streams, AOF).** `POST /api/chat/jobs` answers `202 {job_id}` only after Redis stored the question. Workers confirm a job when it finishes; if one dies, another claims it after `JOB_CLAIM_IDLE_SECONDS` (at-least-once, `JOB_MAX_ATTEMPTS`). More than `QUEUE_MAX_PENDING` waiting answers `429` + `Retry-After` instead of piling up. The page keeps the `job_id`: after a reload or a dropped connection it resumes the answer (`GET /api/chat/jobs/{id}/events`, `Last-Event-ID`); events are kept `EVENTS_TTL_SECONDS` and the answer stays in the conversation. `DELETE /api/chat/jobs/{id}` stops a question. `POST /api/chat` keeps working and goes through the queue.
+- **Cache (a second Redis, LRU).** Identical questions (ignoring case, accents and punctuation) are answered without searching or calling the AI. The key includes the model and a version of the index, so a changed document never serves an old answer. Questions with a license plate, long numbers or e-mails, and conversations with history, are never cached. Many identical questions at once run once. If the cache is down, everything still works.
+- **Qdrant ×3**, every collection with `QDRANT_REPLICATION_FACTOR=3` and `QDRANT_WRITE_CONSISTENCY=2`. Indexing works as before (one `scheduler`); each write reaches the three nodes. One node can be restarted or updated at a time without stopping answers or indexing; when it returns it catches up by itself. Update them one by one, waiting for `healthy` between nodes.
+- **Embeddings ×2-3** behind `nginx-internal`, which retries on another node. `EMBEDDINGS_MEMORY` (default 5g each) must fit `EMBEDDING_MODEL`.
+- **Roles (`ROLE`).** `api` answers, `worker` consumes the queue, `scheduler` indexes, reviews sources and serves `/admin`; `all` (the default without this file) does everything in one process. `/api/reindex` and `/api/control/check` answer 409 outside the scheduler. Keep exactly one scheduler.
+- **Health.** `/health/live` (process up) and `/health/ready` (Postgres and queue); `/health` is the full check.
+- **Backups.** The copies protect against a node failing, not against a deletion or losing the server: `./scripts/backup-ha.sh` dumps Postgres and snapshots Qdrant (run it from cron). The index can also be rebuilt from `documents/`.
+
+Moving from the single-node deployment: the new Qdrant nodes start empty, so the first start indexes every document again (embedding time). Postgres is shared, so conversations are kept. The old `rag-app`, `qdrant` and `embeddings` containers are not started by the HA file; remove them with `docker compose down` first if they were running.
+
+What this does not give you: one server is still one point of failure (power, disk, host). To remove it, move some nodes to a second and third machine (Qdrant and Redis need to be reachable from them); the design does not change.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ROLE` | `all` | `all`, `api`, `worker`, `scheduler` |
+| `REDIS_QUEUE_URL` / `REDIS_CACHE_URL` | empty | Empty = no queue / no cache (previous behavior) |
+| `QUEUE_MAX_PENDING` | `500` | Waiting questions before answering 429 |
+| `WORKER_CONCURRENCY` | `16` | Answers one worker generates at once (`WORKER_REPLICAS` workers) |
+| `JOB_MAX_ATTEMPTS` / `JOB_CLAIM_IDLE_SECONDS` | `3` / `90` | Attempts per question / time before another worker claims it |
+| `JOB_TTL_SECONDS` / `EVENTS_TTL_SECONDS` | `21600` / `1800` | How long a job and its stream can be looked up |
+| `CACHE_TTL_SECONDS` | `86400` | Lifetime of a cached answer |
+| `QDRANT_REPLICATION_FACTOR` / `QDRANT_WRITE_CONSISTENCY` | `1` / `1` | Copies of each shard / copies that must confirm a write |
+
+Size it by measuring: the limit is the AI provider (Claude rate limits or local GPUs), then embeddings. A queue smooths peaks but does not add capacity: keep `QUEUE_MAX_PENDING` close to what the workers can answer in the wait you accept.
 
 ## Operations
 
