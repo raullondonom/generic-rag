@@ -17,6 +17,12 @@ def probe(fn) -> dict:
     return status
 
 
+def ready(services) -> dict:
+    """Light check to take or leave traffic: only what an answer needs and can lose (Postgres)."""
+    database = probe(services.db.ping)
+    return {"ok": database["ok"], "role": services.settings.role, "database": database}
+
+
 def check(services) -> dict:
     s = services.settings
 

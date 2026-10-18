@@ -57,6 +57,10 @@ class Settings(BaseSettings):
 
     # Retrieval
     qdrant_url: str = "http://qdrant:6333"
+    # Qdrant cluster (docker-compose.ha.yml): copies of every shard and copies that must confirm a write
+    qdrant_replication_factor: int = 1
+    qdrant_write_consistency: int = 1
+    qdrant_shards: int = 1
     collection_prefix: str = "documents"
     top_k: int = 10
     # Before searching, a fast model fixes the spelling, rewrites the question and writes one search
@@ -122,6 +126,30 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
 
+    # High availability (docker-compose.ha.yml). The defaults keep the single-process behavior.
+    # all = API + indexing in one process; api = answers only; worker = consumes the queue;
+    # scheduler = indexing, source review and the administration API (exactly one instance)
+    role: str = "all"
+    redis_queue_url: str = ""  # empty = no queue: POST /api/chat answers directly
+    redis_cache_url: str = ""  # empty = no answer cache
+    queue_max_pending: int = 500  # jobs waiting; more are rejected with 429 instead of piling up
+    worker_concurrency: int = 16  # answers a worker generates at the same time
+    job_max_attempts: int = 3
+    job_ttl_seconds: int = 21600  # how long a job (status, conversation id) can be looked up by id
+    events_ttl_seconds: int = 1800  # how long its events can be replayed; after that the answer is in the conversation
+    job_claim_idle_seconds: int = 90  # a job nobody confirms in this time goes to another worker
+    cache_ttl_seconds: int = 86400
+    db_pool_max: int = 8  # Postgres connections of this process
+    cache_wait_seconds: int = 60  # an identical question being answered is awaited instead of repeated
+
+    @field_validator("role")
+    @classmethod
+    def _check_role(cls, value: str) -> str:
+        value = value.strip().lower()
+        if value not in ("all", "api", "worker", "scheduler"):
+            raise ValueError("ROLE must be all, api, worker or scheduler")
+        return value
+
     @field_validator("confluence_sync_time", "control_check_time")
     @classmethod
     def _check_daily_time(cls, value: str, info) -> str:
@@ -146,6 +174,10 @@ class Settings(BaseSettings):
     def control_daily_check(self) -> tuple[int, int] | None:
         """(hour, minute) of the daily source control check, or None if it only runs manually."""
         return self._daily(self.control_check_time)
+
+    @property
+    def runs_scheduler(self) -> bool:
+        return self.role in ("all", "scheduler")
 
     @property
     def ignore_prefix_list(self) -> tuple[str, ...]:

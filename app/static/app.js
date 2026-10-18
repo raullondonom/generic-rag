@@ -429,7 +429,7 @@ async function deleteConversation(c) {
   }
 }
 
-async function openConversation(id) {
+async function openConversation(id, dropUnanswered = false) {
   if (busy) return;
   try {
     const resp = await fetch(`/api/conversations/${id}`);
@@ -439,7 +439,10 @@ async function openConversation(id) {
     store.set("rag.current", currentId);
     setTitle(conv.title);
     messagesEl.replaceChildren();
-    for (const m of conv.messages) {
+    // A question still being answered is shown by the answer in progress, not twice
+    const shown = dropUnanswered && conv.messages.length && conv.messages[conv.messages.length - 1].role === "user"
+      ? conv.messages.slice(0, -1) : conv.messages;
+    for (const m of shown) {
       const wrap = addMessage(m.role, m.content);
       if (m.role === "assistant") {
         if (m.error) wrap.querySelector(".bubble").insertAdjacentHTML("beforeend", `<p class="error">${escapeHtml(tr("incomplete"))}</p>`);
@@ -447,7 +450,7 @@ async function openConversation(id) {
         renderMeta(wrap, m.content, m.error ? null : { messageId: m.id, rating: m.rating, reason: m.reason, comment: m.comment });
       }
     }
-    if (!conv.messages.length) showEmpty();
+    if (!shown.length && !dropUnanswered) showEmpty();
     loadConversations();
   } catch {
     newConversation();
@@ -475,6 +478,112 @@ function setBusy(value) {
   stopBtn.hidden = !value;
 }
 
+const PENDING_KEY = "rag.pending";   // the question in progress: lets the page recover its answer by job id
+const PENDING_MAX_AGE = 6 * 3600 * 1000;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+let currentJob = null;
+
+// Reads an SSE response; calls onEvent(event, data, id) for each event with a payload
+async function readSSE(resp, onEvent) {
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buffer.indexOf("\n\n")) >= 0) {
+      const raw = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+      const event = (raw.match(/^event: (.*)$/m) || [])[1];
+      const dataLine = (raw.match(/^data: (.*)$/m) || [])[1];
+      const id = (raw.match(/^id: (.*)$/m) || [])[1];
+      if (!event || dataLine === undefined) continue;
+      onEvent(event, JSON.parse(dataLine), id);
+    }
+  }
+}
+
+function fatal(message) {
+  return Object.assign(new Error(message), { fatal: true });
+}
+
+// What an answer in progress shows: the text so far, its sources and where it is in the queue
+function newRun(question, bubble) {
+  return { question, bubble, answer: "", sources: [], messageId: null, lastId: "0", finished: false, goneId: null };
+}
+
+function handleEvent(run, event, data) {
+  if (event === "meta") {
+    if (data.conversation_id && data.conversation_id !== currentId) {
+      currentId = data.conversation_id;
+      rememberId(currentId);
+      store.set("rag.current", currentId);
+      setTitle(run.question.slice(0, 80));
+    }
+  } else if (event === "sources") run.sources = data;
+  else if (event === "token") {
+    run.answer += data;
+    run.bubble.innerHTML = renderAnswer(run.answer);
+    scrollDown();
+  } else if (event === "reset") {
+    // The worker that was answering failed and another one starts over: drop what the first one sent
+    run.answer = "";
+    run.sources = [];
+    run.bubble.innerHTML = "";
+  } else if (event === "queue") {
+    if (!run.answer) run.bubble.innerHTML = `<p class="muted">${escapeHtml(tr("queued", { n: data.position }))}</p>`;
+  } else if (event === "done") {
+    run.messageId = data.message_id || null;
+    run.finished = true;
+  } else if (event === "gone") {
+    run.finished = true;
+    run.goneId = data.conversation_id;
+  } else if (event === "error") throw fatal(data);
+}
+
+// Follows a job until it finishes, reconnecting from the last event seen if the connection drops
+async function followJob(jobId, run, signal) {
+  let failures = 0;
+  while (!run.finished) {
+    try {
+      const resp = await fetch(`/api/chat/jobs/${jobId}/events?after=${encodeURIComponent(run.lastId)}`, { signal });
+      if (resp.status === 404) throw fatal(tr("jobLost"));
+      if (resp.status === 429) throw fatal((await resp.json()).detail);
+      if (!resp.ok) throw new Error(resp.statusText);
+      await readSSE(resp, (event, data, id) => {
+        failures = 0;
+        if (id) run.lastId = id;
+        handleEvent(run, event, data);
+      });
+    } catch (err) {
+      if (err.name === "AbortError" || err.fatal) throw err;
+    }
+    if (run.finished) break;
+    if (++failures > 30) throw new Error(tr("connectionLost"));
+    await sleep(Math.min(1000 * failures, 5000));
+  }
+}
+
+// Sends the question: through the queue when the server has one (a job id to recover the answer), else directly
+async function sendQuestion(question, run, signal) {
+  const body = JSON.stringify({ question, conversation_id: currentId, context: currentContext() });
+  if (!brand.queue) {
+    const resp = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body, signal });
+    if (!resp.ok) throw new Error((await resp.json()).detail || resp.statusText);
+    await readSSE(resp, (event, data) => handleEvent(run, event, data));
+    return;
+  }
+  const resp = await fetch("/api/chat/jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body, signal });
+  if (!resp.ok) throw new Error((await resp.json()).detail || resp.statusText);
+  const job = await resp.json();
+  currentJob = job.job_id;
+  store.set(PENDING_KEY, { job_id: job.job_id, question, conversation_id: currentId, ts: Date.now() });
+  if (job.position > 1 && !job.cached) handleEvent(run, "queue", { position: job.position });
+  await followJob(job.job_id, run, signal);
+}
+
 async function ask(question) {
   setBusy(true);
   controller = new AbortController();
@@ -482,63 +591,74 @@ async function ask(question) {
   const wrap = addMessage("assistant", "");
   const bubble = wrap.querySelector(".bubble");
   bubble.classList.add("typing");
-  let answer = "";
-  let sources = [];
-  let messageId = null;
+  const run = newRun(question, bubble);
+  await finishAnswer(wrap, run, sendQuestion(question, run, controller.signal));
+}
 
+// Shows the outcome of an answer in progress (also one recovered after a reload) and releases the page
+async function finishAnswer(wrap, run, work) {
+  const bubble = run.bubble;
+  let keepPending = false;
   try {
-    const resp = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, conversation_id: currentId, context: currentContext() }),
-      signal: controller.signal,
-    });
-    if (!resp.ok) throw new Error((await resp.json()).detail || resp.statusText);
-
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let idx;
-      while ((idx = buffer.indexOf("\n\n")) >= 0) {
-        const raw = buffer.slice(0, idx);
-        buffer = buffer.slice(idx + 2);
-        const event = (raw.match(/^event: (.*)$/m) || [])[1];
-        const dataLine = (raw.match(/^data: (.*)$/m) || [])[1];
-        if (!event || dataLine === undefined) continue;
-        const data = JSON.parse(dataLine);
-        if (event === "meta") {
-          if (data.conversation_id && data.conversation_id !== currentId) {
-            currentId = data.conversation_id;
-            rememberId(currentId);
-            store.set("rag.current", currentId);
-            setTitle(question.slice(0, 80));
-          }
-        } else if (event === "sources") sources = data;
-        else if (event === "token") {
-          answer += data;
-          bubble.innerHTML = renderAnswer(answer);
-          scrollDown();
-        } else if (event === "done") messageId = data.message_id || null;
-        else if (event === "error") throw new Error(data);
-      }
-    }
+    await work;
   } catch (err) {
-    const msg = err.name === "AbortError" ? tr("stopped") : err.message;
-    bubble.insertAdjacentHTML("beforeend", `<p class="error">${escapeHtml(msg)}</p>`);
+    if (err.name === "AbortError") bubble.insertAdjacentHTML("beforeend", `<p class="error">${escapeHtml(tr("stopped"))}</p>`);
+    else {
+      keepPending = !err.fatal && !!currentJob;  // connection problem: reloading the page can still recover it
+      bubble.insertAdjacentHTML("beforeend", `<p class="error">${escapeHtml(err.message)}</p>`);
+    }
   } finally {
+    if (!keepPending) store.set(PENDING_KEY, null);
+    currentJob = null;
     bubble.classList.remove("typing");
-    renderSources(wrap, sources, answer);
-    renderMeta(wrap, answer, messageId ? { messageId } : null);
+    renderSources(wrap, run.sources, run.answer);
+    renderMeta(wrap, run.answer, run.messageId ? { messageId: run.messageId } : null);
     scrollDown();
     controller = null;
     setBusy(false);
     if (!touch.matches) input.focus();
     if (desktop.matches) loadConversations();
+    // The events expired but the answer was saved: show it from the conversation
+    if (run.goneId) openConversation(run.goneId);
   }
+}
+
+// After a reload or a dropped connection: if there is a question in progress, continue showing its answer
+async function resumePending() {
+  const pending = store.get(PENDING_KEY, null);
+  if (!pending) return false;
+  if (Date.now() - pending.ts > PENDING_MAX_AGE) { store.set(PENDING_KEY, null); return false; }
+  let info;
+  try {
+    const resp = await fetch(`/api/chat/jobs/${pending.job_id}`);
+    if (resp.status === 404 || resp.status === 400) { store.set(PENDING_KEY, null); return false; }
+    if (!resp.ok) return false;
+    info = await resp.json();
+  } catch {
+    return false;
+  }
+  const conversation = info.conversation_id || pending.conversation_id;
+  if (conversation) {
+    currentId = conversation;
+    await openConversation(conversation, true);
+  } else {
+    showEmpty();
+  }
+  if (["done", "error", "cancelled"].includes(info.status) && conversation) {
+    store.set(PENDING_KEY, null);
+    await openConversation(conversation);
+    return true;
+  }
+  setBusy(true);
+  controller = new AbortController();
+  currentJob = pending.job_id;
+  addMessage("user", pending.question);
+  const wrap = addMessage("assistant", "");
+  const bubble = wrap.querySelector(".bubble");
+  bubble.classList.add("typing");
+  const run = newRun(pending.question, bubble);
+  finishAnswer(wrap, run, followJob(pending.job_id, run, controller.signal));
+  return true;
 }
 
 form.addEventListener("submit", (e) => {
@@ -549,7 +669,10 @@ form.addEventListener("submit", (e) => {
   input.style.height = "auto";
   ask(q);
 });
-stopBtn.addEventListener("click", () => controller && controller.abort());
+stopBtn.addEventListener("click", () => {
+  if (currentJob) fetch(`/api/chat/jobs/${currentJob}`, { method: "DELETE" }).catch(() => {});
+  if (controller) controller.abort();
+});
 
 input.addEventListener("keydown", (e) => {
   // On touch screens Enter inserts a new line; the button sends
@@ -566,7 +689,8 @@ input.addEventListener("input", () => {
 // ------------------------------------------------------------ startup
 
 applyLanguage(lang);
-loadBranding().then(() => {
+loadBranding().then(async () => {
+  if (brand.queue && await resumePending()) return;
   const lastOpen = store.get("rag.current", null);
   if (lastOpen) openConversation(lastOpen);
   else { showEmpty(); loadConversations(); }

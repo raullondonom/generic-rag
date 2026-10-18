@@ -23,6 +23,8 @@ TEXTS: dict[str, dict[str, str]] = {
         # Notes appended to a model answer
         "refusal": "\n\n_The request was declined by the model's safety policies._",
         "unavailable": "The assistant is not available right now. Please try again in a few minutes.",
+        "cancelled": "Answer stopped.",
+        "busy": "Many people are asking right now. Please try again in a moment.",
         "truncated": "\n\n_(Answer truncated: ANTHROPIC_MAX_TOKENS was reached)_",
         "dry_run": "_(DRY_RUN: simulated answer, Claude was not called.)_\n\n{docs} document(s) were retrieved for this question",
         "over_budget": (
@@ -52,6 +54,7 @@ TEXTS: dict[str, dict[str, str]] = {
                             "{removed} removed, {errors} errors"),
         "confluence_missing_spaces": " · spaces not found: {spaces}",
         "embeddings_waiting": "Waiting for the embeddings service",
+        "cluster_waiting": "Waiting for the Qdrant nodes",
         # Document states
         "no_text": "no extractable text",
         "too_big": "larger than MAX_FILE_MB ({mb} MB)",
@@ -84,6 +87,8 @@ TEXTS: dict[str, dict[str, str]] = {
         ),
         "refusal": "\n\n_La solicitud fue rechazada por las políticas de seguridad del modelo._",
         "unavailable": "El asistente no está disponible en este momento. Inténtalo de nuevo en unos minutos.",
+        "cancelled": "Respuesta detenida.",
+        "busy": "Hay muchas consultas en este momento. Inténtalo de nuevo en unos segundos.",
         "truncated": "\n\n_(Respuesta truncada: se alcanzó ANTHROPIC_MAX_TOKENS)_",
         "dry_run": "_(DRY_RUN: respuesta simulada, no se llamó a Claude.)_\n\nSe recuperaron {docs} documento(s) para esta pregunta",
         "over_budget": (
@@ -111,6 +116,7 @@ TEXTS: dict[str, dict[str, str]] = {
                             "{removed} eliminados, {errors} errores"),
         "confluence_missing_spaces": " · espacios no encontrados: {spaces}",
         "embeddings_waiting": "Esperando el servicio de embeddings",
+        "cluster_waiting": "Esperando los nodos de Qdrant",
         "no_text": "sin texto extraíble",
         "too_big": "supera MAX_FILE_MB ({mb} MB)",
         "unsupported_ext": "formato {ext} no soportado",

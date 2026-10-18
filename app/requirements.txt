@@ -12,6 +12,9 @@ tzdata==2026.5
 psycopg[binary]==3.3.5
 psycopg-pool==3.3.3
 
+# Queue and cache (Redis)
+redis==8.1.0
+
 # AI, vector store and BM25 stemming
 anthropic==1.15.0
 qdrant-client==1.19.1
@@ -35,3 +38,4 @@ pillow==12.3.0
 
 # Tests
 pytest==9.1.1
+fakeredis==2.40.0

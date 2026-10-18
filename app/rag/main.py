@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -17,6 +19,8 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+
+from redis.exceptions import RedisError
 
 from . import admin, branding, health
 from .chat import ChatService
@@ -33,6 +37,8 @@ from .ingest.contextual import Contextualizer
 from .ingest.folder_source import FolderSource
 from .ingest.pipeline import Indexer
 from .ingest.state import StateStore
+from .jobs import FINAL_EVENTS, FINAL_STATUSES, AnswerCache, JobQueue, QueueFull, Worker, cacheable_key, \
+    forward_events, valid_job_id
 from .llm import build_llms
 from .llm.spending import BudgetExhausted, SpendTracker
 from .vectorstore import VectorStore
@@ -45,12 +51,15 @@ log = logging.getLogger("rag")
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 DEFAULT_PROVIDER_KEY = "default_provider"
 FIELD_VALUES_TTL = 300  # seconds the values of an indexed field (selector options) are cached
+INDEX_VERSION_TTL = 15  # seconds the "version" of the index (part of the answer cache key) is cached
+PROVIDER_REFRESH = 10  # seconds between reads of the provider chosen in the admin panel (another process sets it)
+EVENT_ID_RE = re.compile(r"^(0|\d+-\d+)$")
 
 
 class Services:
     def __init__(self):
         self.settings = settings
-        self.db = Database(settings.database_url)
+        self.db = Database(settings.database_url, max_size=settings.db_pool_max)
         self.db.migrate()
         self.state = StateStore(self.db)
         self.embedder = Embedder(settings)
@@ -69,6 +78,35 @@ class Services:
         self.chat.default_override = self.db.get_setting(DEFAULT_PROVIDER_KEY)
         self.scheduler = BackgroundScheduler(timezone="UTC")
         self._field_values: dict[str, tuple[float, list[str]]] = {}
+        self._index_version: tuple[float, str] = (0.0, "")
+        self.queue: JobQueue | None = None
+        self.cache: AnswerCache | None = None
+        self.worker: Worker | None = None
+        self.tasks: set[asyncio.Task] = set()
+
+    def index_version(self) -> str:
+        """Changes whenever a document is indexed, updated or removed: cached answers of an older index are
+        never served."""
+        stamp, value = self._index_version
+        if value and time.monotonic() - stamp < INDEX_VERSION_TTL:
+            return value
+        try:
+            with self.db.conn() as c:
+                row = c.execute("SELECT COUNT(*) AS n, COALESCE(MAX(updated_at)::text, '') AS last "
+                                "FROM documents").fetchone()
+            value = f"{settings.collection_name}:{row['n']}:{row['last']}"
+        except Exception:  # noqa: BLE001 - keep the previous one rather than failing a question
+            log.exception("Could not compute the index version")
+            return value or settings.collection_name
+        self._index_version = (time.monotonic(), value)
+        return value
+
+    def refresh_default_provider(self) -> None:
+        """The admin panel runs in one process; the others read the choice from the database."""
+        try:
+            self.chat.default_override = self.db.get_setting(DEFAULT_PROVIDER_KEY)
+        except Exception:  # noqa: BLE001 - keep the last known choice
+            log.warning("Could not read the provider setting")
 
     def field_values(self, field: str) -> list[str]:
         cached = self._field_values.get(field)
@@ -110,6 +148,10 @@ class Services:
         if self.state.reset_for_collection(settings.collection_name):
             log.info("New index for %s: everything will be indexed from scratch", settings.embedding_model)
             self.store.drop_other_collections()
+        elif not self.store.exists() and self.state.clear_documents():
+            # Qdrant lost the collection (new cluster, deleted volume): the state says "indexed" but nothing is
+            log.warning("The collection %s does not exist in Qdrant: everything will be indexed again",
+                        settings.collection_name)
         if settings.keyword_search:
             try:
                 self.store.ensure_text_index()  # built in the background on an existing collection
@@ -118,13 +160,17 @@ class Services:
 
     def _embeddings_ready(self, source: str, retry) -> bool:
         """If the embeddings service is not up yet (it downloads the model on the first start), retry in a minute."""
+        waiting = "embeddings_waiting"
         try:
             self.embedder.info()
+            waiting = "cluster_waiting"
+            self.store.require_peers()  # a collection with several copies needs every Qdrant node up
             return True
         except Exception as e:  # noqa: BLE001
-            log.warning("Embeddings service not available yet (%s): %s retries in 1 minute", type(e).__name__, source)
+            log.warning("Embeddings or Qdrant not available yet (%s): %s retries in 1 minute", type(e).__name__,
+                        source)
             self.state.run_started(source)
-            self.state.run_finished(source, "waiting", t(settings.language, "embeddings_waiting"))
+            self.state.run_finished(source, "waiting", t(settings.language, waiting))
             if self.scheduler.running:
                 self.scheduler.add_job(retry, "date", id=f"{source}-retry", replace_existing=True,
                                        run_date=datetime.now(timezone.utc) + timedelta(minutes=1))
@@ -170,6 +216,9 @@ class Services:
             log.info("Old conversations deleted: %d", removed)
 
     def start(self) -> None:
+        """Indexing, source review and purge run in one process only (ROLE=all or scheduler)."""
+        if not settings.runs_scheduler:
+            return
         self.prepare_index()
         now = datetime.now(timezone.utc)
         if settings.folder_scan_interval > 0:
@@ -200,8 +249,38 @@ class Services:
                                next_run_time=now + timedelta(minutes=1))
         self.scheduler.start()
 
+    async def start_async(self) -> None:
+        """Queue, cache and worker (when REDIS_QUEUE_URL is set)."""
+        if settings.redis_cache_url:
+            self.cache = AnswerCache(settings.redis_cache_url, settings.cache_ttl_seconds)
+        if settings.redis_queue_url:
+            self.queue = JobQueue(settings.redis_queue_url, max_pending=settings.queue_max_pending,
+                                  ttl=settings.job_ttl_seconds, events_ttl=settings.events_ttl_seconds,
+                                  max_attempts=settings.job_max_attempts, claim_idle=settings.job_claim_idle_seconds)
+            if settings.role in ("all", "worker"):
+                self.worker = Worker(self.queue, self.chat, settings, self.cache, index_version=self.index_version)
+                self.worker.start()
+        elif settings.role == "worker":
+            log.error("ROLE=worker needs REDIS_QUEUE_URL")
+        self.tasks.add(asyncio.create_task(self._refresh_loop()))
+
+    async def _refresh_loop(self) -> None:
+        while True:
+            await asyncio.sleep(PROVIDER_REFRESH)
+            await asyncio.to_thread(self.refresh_default_provider)
+
+    async def stop_async(self) -> None:
+        for task in self.tasks:
+            task.cancel()
+        if self.worker:
+            await self.worker.stop()
+        for client in (self.queue, self.cache):
+            if client:
+                await client.close()
+
     def stop(self) -> None:
-        self.scheduler.shutdown(wait=False)
+        if self.scheduler.running:
+            self.scheduler.shutdown(wait=False)
         self.db.close()
 
 
@@ -211,14 +290,18 @@ services: Services | None = None
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     global services
+    # Every answer uses threads for the blocking clients (Qdrant, embeddings, Postgres)
+    asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=64, thread_name_prefix="rag"))
     services = Services()
-    services.start()
+    await asyncio.to_thread(services.start)
+    await services.start_async()
     if not services.chat.llms:
         log.error("No AI provider: set ANTHROPIC_API_KEY, DRY_RUN=true or OLLAMA_URL")
     log.info("RAG ready. Providers: %s (default: %s). Embeddings: %s",
              ", ".join(services.chat.llms) or "none", settings.default_provider, settings.embedding_model)
     yield
-    services.stop()
+    await services.stop_async()
+    await asyncio.to_thread(services.stop)
 
 
 app = FastAPI(title="Generic RAG", lifespan=lifespan)
@@ -236,6 +319,13 @@ def is_admin(request: Request) -> bool:
         return True
     except HTTPException:
         return False
+
+
+def require_scheduler() -> None:
+    """Indexing and the source review live in one process (ROLE=all or scheduler); the balancer routes there."""
+    if not settings.runs_scheduler:
+        raise HTTPException(409, "This instance does not run indexing (ROLE=%s): use the scheduler instance"
+                            % settings.role)
 
 
 AdminOnly = Depends(require_admin)
@@ -281,13 +371,32 @@ def get_health():
     return JSONResponse(result, status_code=200 if result["ok"] else 503)
 
 
+@app.get("/health/live", include_in_schema=False)
+def health_live():
+    """The process is up (container restart decisions)."""
+    return {"ok": True, "role": settings.role}
+
+
+@app.get("/health/ready", include_in_schema=False)
+async def health_ready():
+    """Can take traffic: Postgres and the queue answer. The balancer and the container health check use it."""
+    result = await asyncio.to_thread(health.ready, services)
+    if services.queue is not None:
+        try:
+            await asyncio.wait_for(services.queue.redis.ping(), 3)
+            result["queue"] = {"ok": True, **await services.queue.stats()}
+        except (RedisError, asyncio.TimeoutError, OSError) as e:
+            result.update(ok=False, queue={"ok": False, "error": type(e).__name__})
+    return JSONResponse(result, status_code=200 if result["ok"] else 503)
+
+
 @app.get("/api/config")
 def ui_config():
     """What the end-user UI needs: the collection's branding and whether it can answer."""
     brand = branding.load(settings.docs_path, settings.control_dir, settings.language)
     fields = [{k: f[k] for k in ("id", "label", "placeholder", "options")} for f in services.context_fields(brand)]
     return {**brand, "context_fields": fields, "icon_url": "/api/branding/icon" if brand["icon"] else "/icon.svg",
-            "ready": bool(services.chat.llms)}
+            "ready": bool(services.chat.llms), "queue": services.queue is not None}
 
 
 def user_context(sent: dict[str, str]) -> list[dict]:
@@ -313,8 +422,158 @@ def web_manifest():
                         media_type="application/manifest+json")
 
 
+def sse(kind: str, data, event_id: str | None = None) -> str:
+    head = f"id: {event_id}\n" if event_id else ""
+    return f"{head}event: {kind}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+
+def busy_response() -> JSONResponse:
+    return JSONResponse({"detail": t(settings.language, "busy")}, status_code=429, headers={"Retry-After": "10"})
+
+
+async def submit_job(req: ChatRequest, request: Request) -> dict:
+    """Stores the question and returns its job. A question already answered (cache) is served at once without
+    taking a place in the queue; the others wait their turn. Raises QueueFull when there is no room."""
+    provider = req.provider if req.provider and is_admin(request) else None
+    try:
+        services.chat.pick_llm(provider)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    context = await asyncio.to_thread(user_context, req.context)
+    queue, cache = services.queue, services.cache
+    key = cacheable_key(services.chat, settings, req.question, req.conversation_id, provider, context,
+                        await asyncio.to_thread(services.index_version)) if cache else None
+    hit = await cache.get(key) if key else None
+    job = await queue.create(req.question, req.conversation_id, context, provider, enqueue=not hit)
+    if hit:
+        async def serve() -> None:
+            result: dict = {}
+            try:
+                await forward_events(queue, job["job_id"], services.chat.replay(req.question, req.conversation_id,
+                                                                                hit), result)
+                await queue.set_status(job["job_id"], "done")
+            except Exception:  # noqa: BLE001
+                log.exception("Could not serve the cached answer")
+                await queue.append(job["job_id"], "error", t(settings.language, "unavailable"))
+                await queue.set_status(job["job_id"], "error")
+
+        task = asyncio.create_task(serve())
+        services.tasks.add(task)
+        task.add_done_callback(services.tasks.discard)
+        job["cached"] = True
+    return job
+
+
+async def job_stream(job_id: str, after: str, request: Request | None = None):
+    """SSE of a job from the event after `after` ("0" = from the start); the browser can reconnect with the last
+    event id it saw and continue. Ends with `done` or `error`."""
+    queue = services.queue
+    last_status, announced = "", None
+    while True:
+        if request is not None and await request.is_disconnected():
+            return
+        try:
+            events = await queue.read_events(job_id, after, block_ms=5000)
+        except RedisError:
+            log.warning("Queue not reachable while streaming %s", job_id)
+            yield sse("error", t(settings.language, "unavailable"))
+            return
+        for event_id, kind, raw in events:
+            after = event_id
+            yield f"id: {event_id}\nevent: {kind}\ndata: {raw}\n\n"
+            if kind in FINAL_EVENTS:
+                return
+        if events:
+            continue
+        job = await queue.get(job_id)
+        if job is None:
+            yield sse("error", t(settings.language, "unavailable"))
+            return
+        status = job["status"]
+        if status == "queued":
+            position = await queue.position(job)
+            if (status, position) != (last_status, announced):
+                yield sse("queue", {"position": position})
+                last_status, announced = status, position
+        if status in FINAL_STATUSES:  # finished and its events expired: the answer is in the conversation
+            yield sse("gone", {"conversation_id": job.get("conversation_id") or None, "status": status})
+            return
+        yield ": keep-alive\n\n"
+
+
+@app.post("/api/chat/jobs")
+async def create_job(req: ChatRequest, request: Request):
+    """Queues a question and answers 202 with the job id, which the browser keeps to recover the answer."""
+    if services.queue is None:
+        raise HTTPException(404, "The queue is not enabled")
+    try:
+        job = await submit_job(req, request)
+    except QueueFull:
+        return busy_response()
+    except RedisError as e:
+        log.exception("Queue not reachable")
+        raise HTTPException(503, t(settings.language, "unavailable")) from e
+    return JSONResponse(job, status_code=202)
+
+
+def _job_or_404(job_id: str) -> None:
+    if services.queue is None or not valid_job_id(job_id):
+        raise HTTPException(404, "Job not found")
+
+
+@app.get("/api/chat/jobs/{job_id}")
+async def get_job(job_id: str):
+    _job_or_404(job_id)
+    job = await services.queue.get(job_id)
+    if job is None:
+        raise HTTPException(404, "Job not found")
+    status = job["status"]
+    return {"job_id": job_id, "status": status, "conversation_id": job.get("conversation_id") or None,
+            "position": await services.queue.position(job) if status == "queued" else 0}
+
+
+@app.get("/api/chat/jobs/{job_id}/events")
+async def job_events(job_id: str, request: Request, after: str = Query("0")):
+    _job_or_404(job_id)
+    if await services.queue.get(job_id) is None:
+        raise HTTPException(404, "Job not found")
+    last = request.headers.get("last-event-id") or after
+    if not EVENT_ID_RE.match(last):
+        raise HTTPException(400, "Invalid event id")
+    return StreamingResponse(job_stream(job_id, last, request), media_type="text/event-stream",
+                             headers=SSE_HEADERS)
+
+
+@app.delete("/api/chat/jobs/{job_id}")
+async def cancel_job(job_id: str):
+    """Stops a question: waiting ones are dropped, running ones are cut (the partial answer is saved as incomplete)."""
+    _job_or_404(job_id)
+    return {"cancelled": await services.queue.cancel(job_id)}
+
+
 @app.post("/api/chat")
 async def chat(req: ChatRequest, request: Request):
+    """Streams the answer. With the queue enabled it goes through it too (the same protection and cache) and the
+    stream ends if the connection drops; clients that want to recover the answer use /api/chat/jobs."""
+    if services.queue is not None:
+        try:
+            job = await submit_job(req, request)
+        except QueueFull:
+            return busy_response()
+        except RedisError as e:
+            log.exception("Queue not reachable")
+            raise HTTPException(503, t(settings.language, "unavailable")) from e
+
+        async def through_queue():
+            yield sse("job", {"job_id": job["job_id"]})
+            async for chunk in job_stream(job["job_id"], "0", request):
+                yield chunk
+
+        return StreamingResponse(through_queue(), media_type="text/event-stream", headers=SSE_HEADERS)
+
     provider = req.provider if req.provider and is_admin(request) else None
     try:
         services.chat.pick_llm(provider)
@@ -334,8 +593,7 @@ async def chat(req: ChatRequest, request: Request):
             log.exception("Error generating the answer")
             yield f"event: error\ndata: {unavailable}\n\n"
 
-    return StreamingResponse(events(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    return StreamingResponse(events(), media_type="text/event-stream", headers=SSE_HEADERS)
 
 
 @app.post("/api/conversations/lookup")
@@ -393,8 +651,17 @@ def admin_check():
     return {"ok": True, "token_required": bool(settings.admin_token)}
 
 
+async def queue_stats() -> dict | None:
+    if services.queue is None:
+        return None
+    try:
+        return await services.queue.stats()
+    except (RedisError, OSError):
+        return {"error": "unreachable"}
+
+
 @app.get("/api/admin/status", dependencies=[AdminOnly])
-def admin_status():
+async def admin_status():
     llms = services.chat.llms
     return {
         "language": normalize(settings.language),
@@ -403,9 +670,10 @@ def admin_status():
         "default_provider": services.chat.current_default(),
         "models": {name: llm.model for name, llm in llms.items()},
         "embed_model": settings.embedding_model,
-        "chunks_in_index": services.store.count(),
-        "sources": services.state.summary(),
-        "spend": services.spend.summary() if "anthropic" in llms else None,
+        "chunks_in_index": await asyncio.to_thread(services.store.count),
+        "sources": await asyncio.to_thread(services.state.summary),
+        "spend": await asyncio.to_thread(services.spend.summary) if "anthropic" in llms else None,
+        "role": settings.role,
         "dry_run": settings.dry_run,
         "confluence": {
             "configured": services.confluence.configured,
@@ -416,6 +684,7 @@ def admin_status():
         },
         "folder": {"path": settings.docs_path, "running": services.folder.lock.locked(),
                    "auto": settings.folder_scan_interval > 0},
+        "queue": await queue_stats(),
     }
 
 
@@ -453,7 +722,7 @@ def control_status(findings: int = Query(200, ge=0, le=10000)):
     }
 
 
-@app.post("/api/control/check", dependencies=[AdminOnly])
+@app.post("/api/control/check", dependencies=[AdminOnly, Depends(require_scheduler)])
 def control_check(req: ControlCheckRequest):
     """Starts a review in the background. It only reports: nothing is downloaded or reindexed."""
     if ControlFolder.load(settings.docs_path, settings.control_dir) is None:
@@ -469,7 +738,7 @@ def documents(source: str | None = None, status: str | None = None, limit: int =
     return services.state.list(source=source, status=status, limit=limit)
 
 
-@app.post("/api/reindex", dependencies=[AdminOnly])
+@app.post("/api/reindex", dependencies=[AdminOnly, Depends(require_scheduler)])
 def reindex(req: ReindexRequest):
     started = []
     if req.source in ("folder", "all"):

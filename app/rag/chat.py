@@ -247,6 +247,28 @@ class ChatService:
                                          per_doc=2 * self.settings.max_chunks_per_doc)
         return prepared, queries, await self.rerank(llm, question, prepared, context, candidates)
 
+    async def replay(self, question: str, conversation_id: str | None, cached: dict
+                     ) -> AsyncIterator[tuple[str, object]]:
+        """Same events as `answer` for an answer that was already generated (cache): no search, no AI call.
+        The conversation is saved as usual."""
+        if conversation_id and await asyncio.to_thread(self.conversations.exists, conversation_id):
+            cid = conversation_id
+        else:
+            cid = await asyncio.to_thread(self.conversations.create, question.strip()[:80])
+        await asyncio.to_thread(self.conversations.add_message, cid, "user", question)
+        yield "meta", {"provider": cached.get("provider"), "model": cached.get("model"), "conversation_id": cid,
+                       "cached": True}
+        yield "sources", cached["sources"]
+        yield "token", cached["answer"]
+        guardrail = cached.get("guardrail")
+        mid = await asyncio.to_thread(
+            self.conversations.add_message, cid, "assistant", cached["answer"], sources=cached["sources"],
+            provider=None if guardrail else cached.get("provider"), model=None if guardrail else cached.get("model"))
+        done = {"queries": cached.get("queries", []), "keywords": cached.get("keywords", []), "message_id": mid}
+        if guardrail:
+            done["guardrail"] = guardrail
+        yield "done", done
+
     async def answer(self, question: str, conversation_id: str | None, provider: str | None,
                      context: list[dict] | None = None) -> AsyncIterator[tuple[str, object]]:
         """Yields (kind, data) events: meta, sources, token, done. Saves the question and the answer.
