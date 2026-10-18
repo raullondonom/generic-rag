@@ -125,6 +125,7 @@ docker compose $HA logs -f worker       # logs of one service (api-1, scheduler,
 docker compose $HA down                 # stop; keeps the data (volumes)
 ```
 
+- **AMD GPU (ROCm) for the local model**: add the AMD file to the same command, `HA="-f docker-compose.yml -f docker-compose.ha.yml -f docker-compose.amd.yml"`, and set `RENDER_GID` to the host's `render` group (`getent group render | cut -d: -f3`, 993 on the test machine). Only Ollama uses the GPU; embeddings stay on the CPU. Check with `docker compose $HA exec ollama ollama ps`: it must say `100% GPU`. Measured on a Radeon RX 9060 XT (gfx1200, 16 GB) with `qwen3:4b-instruct-2507-q4_K_M`: a new question took 13.7 s through the HA stack, against 372 s on the CPU.
 - Options: `--scale worker=4` for more workers, `--profile embeddings3` for a third embeddings node. The `HA_*` variables and the sizes are in `.env.example`.
 - The first start downloads the embeddings model (about 1.2 GB) into an empty volume and `up` can end with `embeddings-1 is unhealthy` while it downloads. The container keeps going: wait until `ps` shows it `healthy` and run `up -d` again.
 - Open <http://localhost:8080/health/ready> to check that Postgres and the queue answer. The administration panel is at `/admin` on the same port.
