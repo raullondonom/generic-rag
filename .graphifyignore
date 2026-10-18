@@ -1,0 +1,8 @@
+documents/
+data/
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+.env
+.env.*
