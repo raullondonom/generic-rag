@@ -13,6 +13,8 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 BASE_URL="${BASE_URL:-http://localhost:8081}"
 NAMESPACE="${NAMESPACE:-transit-chat}"
 DOCS_HOST_DIR="${DOCS_HOST_DIR:-$REPO_ROOT/examples/documents}"
+SAMPLE_FILE="${SAMPLE_FILE:-example-user-guide.md}"
+QUESTION="${QUESTION:-How do I add new documents?}"
 TOKEN_FILE="$REPO_ROOT/deploy/k8s/.local-secrets.env"
 TOKEN="${ADMIN_TOKEN:-$(sed -n 's/^ADMIN_TOKEN=//p' "$TOKEN_FILE" 2>/dev/null || true)}"
 
@@ -60,7 +62,7 @@ section "Application"
 ready="$(curl -s --max-time 30 "$BASE_URL/api/config" | jq -r '.ready' 2>/dev/null)"
 [ "$ready" = "true" ] && ok "/api/config ready=true" || bad "/api/config ready=$ready"
 [ "$(http_status "$BASE_URL/admin")" = "200" ] && ok "/admin" || bad "/admin"
-[ "$(http_status "$BASE_URL/api/file?path=example-user-guide.md")" = "200" ] && ok "/api/file serves the corpus" || bad "/api/file"
+[ "$(http_status "$BASE_URL/api/file?path=$SAMPLE_FILE")" = "200" ] && ok "/api/file serves the corpus" || bad "/api/file"
 [ "$(http_status "$BASE_URL/api/chat/jobs/abc")" = "404" ] && ok "queue endpoints disabled (expected in this deployment)" || bad "unexpected /api/chat/jobs response"
 
 section "Administration"
@@ -69,10 +71,10 @@ if [ -z "$TOKEN" ]; then
 else
   [ "$(http_status -H "X-Admin-Token: $TOKEN" "$BASE_URL/api/admin/check")" = "200" ] && ok "admin check with token" || bad "admin check with token"
   [ "$(http_status "$BASE_URL/api/documents")" = "401" ] && ok "admin check without token is refused" || bad "admin check without token"
-  if documents | jq -e '.[] | select(.location == "example-user-guide.md" and .status == "indexed")' >/dev/null 2>&1; then
-    ok "example document is indexed"
+  if documents | jq -e --arg l "$SAMPLE_FILE" '.[] | select(.location == $l and .status == "indexed")' >/dev/null 2>&1; then
+    ok "sample document is indexed ($SAMPLE_FILE)"
   else
-    bad "example document is not indexed"
+    bad "sample document is not indexed ($SAMPLE_FILE)"
   fi
 fi
 
@@ -80,7 +82,7 @@ section "Answer (SSE)"
 tmp="$(mktemp)"
 curl -sN --max-time 240 -X POST "$BASE_URL/api/chat" \
   -H 'Content-Type: application/json' \
-  -d '{"question":"How do I add new documents?"}' > "$tmp"
+  -d "$(jq -nc --arg q "$QUESTION" '{question: $q}')" > "$tmp"
 for event in meta sources token done; do
   if grep -q "^event: $event" "$tmp"; then ok "SSE event '$event'"; else bad "SSE event '$event' missing"; fi
 done
