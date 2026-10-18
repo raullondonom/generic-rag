@@ -209,7 +209,19 @@ function validity(s) {
     : ` · ${escapeHtml(tr("validUntil", { date: s.valid_until }))}`;
 }
 
-function renderSources(wrap, sources) {
+// Numbers cited in the answer as [n] or [n, m]
+function citedNumbers(text) {
+  const out = new Set();
+  for (const m of (text || "").matchAll(/\[(\d+(?:\s*,\s*\d+)*)\]/g)) {
+    m[1].split(",").forEach((n) => out.add(Number(n)));
+  }
+  return out;
+}
+
+// Only the documents the answer cites (all of them if it cites none)
+function renderSources(wrap, sources, answer) {
+  const cited = citedNumbers(answer);
+  if (sources && cited.size) sources = sources.filter((s) => cited.has(s.n));
   if (!sources || !sources.length) return;
   const det = document.createElement("details");
   det.className = "sources";
@@ -407,7 +419,7 @@ async function openConversation(id) {
       const wrap = addMessage(m.role, m.content);
       if (m.role === "assistant") {
         if (m.error) wrap.querySelector(".bubble").insertAdjacentHTML("beforeend", `<p class="error">${escapeHtml(tr("incomplete"))}</p>`);
-        renderSources(wrap, m.sources);
+        renderSources(wrap, m.sources, m.content);
         renderMeta(wrap, m.content, m.error ? null : { messageId: m.id, rating: m.rating, reason: m.reason, comment: m.comment });
       }
     }
@@ -495,7 +507,7 @@ async function ask(question) {
     bubble.insertAdjacentHTML("beforeend", `<p class="error">${escapeHtml(msg)}</p>`);
   } finally {
     bubble.classList.remove("typing");
-    renderSources(wrap, sources);
+    renderSources(wrap, sources, answer);
     renderMeta(wrap, answer, messageId ? { messageId } : null);
     scrollDown();
     controller = null;
