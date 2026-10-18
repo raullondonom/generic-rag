@@ -93,6 +93,7 @@ class ChatService:
         """Spelling, a self-contained question and search queries; the question as typed if it fails."""
         if not self.settings.query_preparation:
             return query_prep.from_model(None, question, 0)
+        max_keywords = self.settings.search_keywords_max if self.settings.keyword_search else 0
         convo = "\n".join(f"{m['role']}: {m['content'][:1500]}" for m in history[-4:])
         collection = ""
         if self.describe:
@@ -102,29 +103,33 @@ class ChatService:
                 log.exception("Could not describe the collection")
         try:
             data = await llm.complete_json(
-                prepare_prompt(self.language, collection, self.settings.search_queries_max),
+                prepare_prompt(self.language, collection, self.settings.search_queries_max, max_keywords),
                 [{"role": "user", "content": build_prepare_message(convo, question, self.language, context)}],
                 PREPARE_SCHEMA,
             )
         except Exception:  # noqa: BLE001 - if it fails, search with the question as typed
             log.exception("Could not prepare the search")
             data = None
-        return query_prep.from_model(data or None, question, self.settings.search_queries_max)
+        return query_prep.from_model(data or None, question, self.settings.search_queries_max, max_keywords)
 
-    async def retrieve(self, queries: list[str], boosts: list[dict[str, str]] | None = None) -> list[Hit]:
+    async def retrieve(self, queries: list[str], boosts: list[dict[str, str]] | None = None,
+                       keywords: list[str] | None = None) -> list[Hit]:
         """One search per query, fused (reciprocal rank fusion) with at most MAX_CHUNKS_PER_DOC per document.
 
         Each boost ({indexed field: value}, from the user's selectors) adds searches restricted to it with
-        the first two queries: its documents come up without hiding the rest of the collection.
+        the first two queries: its documents come up without hiding the rest of the collection. Each
+        keyword adds a search, with the self-contained question, among the chunks that contain it.
         """
         if not queries:
             return []
         vectors = await asyncio.to_thread(self.embedder.embed_queries, queries)
         candidates = self.settings.top_k * 3
         excluded = self.settings.excluded_status_list
-        searches = [(v, None) for v in vectors] + [(v, where) for where in boosts or [] for v in vectors[:2]]
-        results = [await asyncio.to_thread(self.store.search, v, candidates, excluded, where)
-                   for v, where in searches]
+        searches = [(v, None, None) for v in vectors]
+        searches += [(v, where, None) for where in boosts or [] for v in vectors[:2]]
+        searches += [(vectors[min(1, len(vectors) - 1)], None, kw) for kw in keywords or []]
+        results = [await asyncio.to_thread(self.store.search, v, candidates, excluded, where, text)
+                   for v, where, text in searches]
         return query_prep.fuse(results, self.settings.top_k, self.settings.min_score, self.settings.score_margin,
                                self.settings.max_chunks_per_doc)
 
@@ -186,7 +191,7 @@ class ChatService:
         prepared = await self.prepare(llm, safe_question, safe_history, context)
         queries = prepared.search_queries(self.settings.search_queries_max)
         boosts = [{c["field"]: c["value"]} for c in context if c.get("field")]
-        docs = group_hits(await self.retrieve(queries, boosts), self.language)
+        docs = group_hits(await self.retrieve(queries, boosts, prepared.keywords), self.language)
         sources = [{k: d[k] for k in SOURCE_FIELDS} for d in docs]
         yield "sources", sources
 
@@ -195,7 +200,8 @@ class ChatService:
             answer = t(self.language, "no_context")
             yield "token", answer
             mid = await save(guardrail="no_context")
-            yield "done", {"guardrail": "no_context", "queries": queries, "message_id": mid}
+            yield "done", {"guardrail": "no_context", "queries": queries, "keywords": prepared.keywords,
+                           "message_id": mid}
             return
 
         user_message = build_user_message(safe_question, docs, self.language, prepared, context)
@@ -209,4 +215,4 @@ class ChatService:
             await asyncio.shield(save(error=f"{type(e).__name__}: {e}"[:500]))
             raise
         mid = await save()
-        yield "done", {"queries": queries, "message_id": mid}
+        yield "done", {"queries": queries, "keywords": prepared.keywords, "message_id": mid}

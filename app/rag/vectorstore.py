@@ -10,8 +10,12 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models as qm
 
 from .config import Settings
+from .i18n import normalize
 
 log = logging.getLogger(__name__)
+
+# LANGUAGE -> stemmer and stopwords of the full-text index
+TEXT_LANGUAGES = {"en": "english", "es": "spanish"}
 
 
 @dataclass
@@ -25,6 +29,7 @@ class VectorStore:
     def __init__(self, settings: Settings, client: QdrantClient | None = None):
         self.prefix = settings.collection_prefix
         self.collection = settings.collection_name
+        self.language = normalize(settings.language)
         self.client = client or QdrantClient(url=settings.qdrant_url, timeout=60)
         self._ready = False
 
@@ -38,6 +43,7 @@ class VectorStore:
             )
             for field in ("doc_id", "source", "status"):
                 self.client.create_payload_index(self.collection, field, qm.PayloadSchemaType.KEYWORD)
+            self.ensure_text_index()
         self._ready = True
 
     def exists(self) -> bool:
@@ -80,18 +86,35 @@ class VectorStore:
         )
 
     def search(self, vector: list[float], limit: int, exclude_statuses: list[str] | None = None,
-               where: dict[str, str] | None = None) -> list[Hit]:
+               where: dict[str, str] | None = None, text: str | None = None) -> list[Hit]:
         """Nearest chunks. Chunks whose registry `status` is in `exclude_statuses` (e.g. repealed) are skipped;
-        `where` keeps only the chunks whose payload has those values ({field: value})."""
+        `where` keeps only the chunks whose payload has those values ({field: value}) and `text` only those
+        containing all its words (full-text index)."""
         if not self.exists():
             return []
         must_not = [qm.FieldCondition(key="status", match=qm.MatchAny(any=list(exclude_statuses)))] \
             if exclude_statuses else None
-        must = [qm.FieldCondition(key=k, match=qm.MatchValue(value=v)) for k, v in (where or {}).items()] or None
+        must = [qm.FieldCondition(key=k, match=qm.MatchValue(value=v)) for k, v in (where or {}).items()]
+        if text:
+            must.append(qm.FieldCondition(key="text", match=qm.MatchText(text=text)))
+        must = must or None
         query_filter = qm.Filter(must=must, must_not=must_not) if must or must_not else None
         result = self.client.query_points(self.collection, query=vector, limit=limit, with_payload=True,
                                           query_filter=query_filter)
         return [Hit(score=p.score, text=p.payload.get("text", ""), payload=p.payload) for p in result.points]
+
+    def ensure_text_index(self) -> None:
+        """Full-text index of the chunks for keyword filters: lowercase, without accents, stemmed and
+        without stopwords in the collection's language. Built on the stored chunks (no re-embedding)."""
+        if not self.exists():
+            return
+        lang = TEXT_LANGUAGES.get(self.language, "english")
+        params = qm.TextIndexParams(
+            type=qm.TextIndexType.TEXT, tokenizer=qm.TokenizerType.WORD, lowercase=True, ascii_folding=True,
+            min_token_len=2, max_token_len=40, stopwords=qm.Language(lang),
+            stemmer=qm.SnowballParams(type=qm.Snowball.SNOWBALL, language=qm.SnowballLanguage(lang)),
+        )
+        self.client.create_payload_index(self.collection, "text", field_schema=params, wait=False)
 
     def ensure_keyword_index(self, field: str) -> None:
         """Payload index needed to list a field's values and filter by it (idempotent)."""

@@ -76,6 +76,10 @@ previous conversation (pronouns, "that", "the previous one"). Do not add facts t
 - queries: 1 to {max_queries} short search queries, one per topic of the question, in the language of \
 the documents and with the technical terms the documents would use (for example the legal or official name \
 of the subject).
+- keywords: 0 to {max_keywords} literal words or short phrases that the relevant passages would contain: \
+the distinctive terms of the question with their spelling fixed, and the synonyms or official terms the \
+documents may use for the same thing (for example the technical or legal name of an object or a procedure). \
+Each one is used as a filter, so leave out generic words that appear everywhere in the collection.
 - missing: data the user did not give and that may change the answer (for example the place or the type \
 of case), short; empty if nothing is missing. Data given in the user's context is not missing.
 If the user's context comes with the question, use it in the queries when it matters.""",
@@ -89,6 +93,10 @@ anterior (pronombres, "eso", "el anterior"). No agregues datos que el usuario no
 - queries: de 1 a {max_queries} consultas de búsqueda cortas, una por cada tema de la pregunta, en el idioma \
 de los documentos y con los términos técnicos que usarían los documentos (por ejemplo el nombre jurídico u \
 oficial del asunto).
+- keywords: de 0 a {max_keywords} palabras o frases cortas literales que contendrían los pasajes relevantes: \
+los términos distintivos de la pregunta con la ortografía corregida, y los sinónimos o términos oficiales que \
+los documentos pueden usar para lo mismo (por ejemplo el nombre técnico o jurídico de un objeto o trámite). \
+Cada una se usa como filtro, así que deja fuera palabras genéricas que aparecen en toda la colección.
 - missing: datos que el usuario no dio y que pueden cambiar la respuesta (por ejemplo el lugar o el tipo de \
 caso), breves; vacío si no falta nada. Lo indicado en el contexto del usuario no falta.
 Si la pregunta trae el contexto del usuario, úsalo en las consultas cuando importe.""",
@@ -100,9 +108,10 @@ PREPARE_SCHEMA = {
         "corrected": {"type": "string"},
         "standalone": {"type": "string"},
         "queries": {"type": "array", "items": {"type": "string"}},
+        "keywords": {"type": "array", "items": {"type": "string"}},
         "missing": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["corrected", "standalone", "queries", "missing"],
+    "required": ["corrected", "standalone", "queries", "keywords", "missing"],
     "additionalProperties": False,
 }
 
@@ -111,11 +120,13 @@ _LABELS = {
            "conversation": "Conversation", "last": "Last question",
            "interpretation": "Automatic interpretation of the question (spelling fixed and rewritten; check it)",
            "searches": "Searches run in the documents", "missing": "Data that may be missing",
+           "keywords": "Keywords searched literally",
            "context": "Context indicated by the user"},
     "es": {"documents": "DOCUMENTOS", "document": "Documento", "question": "Pregunta del usuario (original)",
            "conversation": "Conversación", "last": "Última pregunta",
            "interpretation": "Interpretación automática de la pregunta (ortografía corregida y reformulada; revísala)",
            "searches": "Búsquedas realizadas en los documentos", "missing": "Datos que podrían faltar",
+           "keywords": "Palabras clave buscadas literalmente",
            "context": "Contexto indicado por el usuario"},
 }
 
@@ -124,8 +135,9 @@ def system_prompt(language: str) -> str:
     return SYSTEM_PROMPTS[normalize(language)]
 
 
-def prepare_prompt(language: str, collection: str, max_queries: int) -> str:
-    return PREPARE_PROMPTS[normalize(language)].format(collection=collection, max_queries=max_queries)
+def prepare_prompt(language: str, collection: str, max_queries: int, max_keywords: int = 0) -> str:
+    return PREPARE_PROMPTS[normalize(language)].format(collection=collection, max_queries=max_queries,
+                                                       max_keywords=max_keywords)
 
 
 def labels(language: str) -> dict[str, str]:
@@ -158,6 +170,8 @@ def build_user_message(question: str, docs: list[dict], language: str, prepared=
             lines.append(f"{lb['interpretation']}: {prepared.standalone}")
         if prepared.queries:
             lines.append(f"{lb['searches']}: " + " | ".join(prepared.queries))
+        if prepared.keywords:
+            lines.append(f"{lb['keywords']}: " + " | ".join(prepared.keywords))
         if prepared.missing:
             lines.append(f"{lb['missing']}: " + "; ".join(prepared.missing))
     return "\n".join(lines)

@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     # query per topic; the answering model checks that interpretation against the original
     query_preparation: bool = True
     search_queries_max: int = 3
+    # Hybrid search: keywords (and their synonyms or official terms) from the preparation step, each one a
+    # semantic search restricted to the chunks that contain it (full-text index of Qdrant, in LANGUAGE)
+    keyword_search: bool = True
+    search_keywords_max: int = 3
     max_chunks_per_doc: int = 2  # so a single long document cannot fill the whole context
     min_score: float = 0.45
     score_margin: float = 0.12

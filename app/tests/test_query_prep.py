@@ -35,6 +35,22 @@ def test_fusion_rewards_agreement_and_caps_chunks_per_document():
     assert ("c", 0) in keys
 
 
+def test_every_search_keeps_its_best_hit():
+    shared = [hit(0.9, "a", 0), hit(0.89, "a", 1), hit(0.88, "b", 0), hit(0.87, "b", 1)]
+    keyword = [hit(0.6, "k")]
+    out = query_prep.fuse([shared, list(shared), keyword], top_k=3, min_score=0.3, score_margin=0.2,
+                          max_per_doc=2)
+    assert "k" in [h.payload["doc_id"] for h in out]
+    assert out[0].payload["doc_id"] == "a"  # the most supported chunk still comes first
+
+
+def test_keywords_are_deduplicated_and_capped():
+    p = query_prep.from_model({"corrected": "q", "standalone": "q", "queries": [],
+                               "keywords": ["Form", "form", "annex", "x" * 200, "four"], "missing": []}, "q", 3, 3)
+    assert p.keywords == ["Form", "annex", "x" * 80]
+    assert query_prep.from_model({"keywords": ["a"]}, "q", 3).keywords == []
+
+
 def test_fusion_cuts_weak_hits_of_each_search():
     out = query_prep.fuse([[hit(0.9, "a"), hit(0.5, "b")], [hit(0.2, "c")]], top_k=10, min_score=0.3,
                           score_margin=0.15, max_per_doc=2)

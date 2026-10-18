@@ -105,6 +105,11 @@ class Services:
         if self.state.reset_for_collection(settings.collection_name):
             log.info("New index for %s: everything will be indexed from scratch", settings.embedding_model)
             self.store.drop_other_collections()
+        if settings.keyword_search:
+            try:
+                self.store.ensure_text_index()  # built in the background on an existing collection
+            except Exception:  # noqa: BLE001 - without it the keyword searches only find less
+                log.exception("Could not create the full-text index")
 
     def _embeddings_ready(self, source: str, retry) -> bool:
         """If the embeddings service is not up yet (it downloads the model on the first start), retry in a minute."""

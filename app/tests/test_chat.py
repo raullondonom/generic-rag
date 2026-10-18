@@ -22,13 +22,18 @@ class FakeStore:
     def __init__(self, hits):
         self.hits = hits
         self.wheres = []
+        self.texts = []
 
-    def search(self, vector, limit, exclude_statuses=None, where=None):
+    def search(self, vector, limit, exclude_statuses=None, where=None, text=None):
         self.excluded = exclude_statuses
         self.wheres.append(where)
+        self.texts.append(text)
+        hits = self.hits
         if where:
-            return [h for h in self.hits if all(h.payload.get(k) == v for k, v in where.items())]
-        return self.hits
+            hits = [h for h in hits if all(h.payload.get(k) == v for k, v in where.items())]
+        if text:
+            hits = [h for h in hits if text.lower() in h.text.lower()]
+        return hits
 
 
 class FakeConversations:
@@ -76,7 +81,7 @@ class FakeLLM:
         if isinstance(self.prepared, Exception):
             raise self.prepared
         return self.prepared if self.prepared is not None else {
-            "corrected": "", "standalone": "rewritten query", "queries": ["other wording"], "missing": []}
+            "corrected": "", "standalone": "rewritten query", "queries": ["other wording"], "keywords": [], "missing": []}
 
 
 def run(service, question, conversation_id=None, context=None):
@@ -187,7 +192,7 @@ def test_follow_up_uses_saved_history_and_rewrites():
 def test_search_is_prepared_and_the_answer_sees_the_interpretation():
     service, llm, _ = make([hit(0.9)], prepared={
         "corrected": "refund for a delayed delivery", "standalone": "refund policy for a delayed delivery",
-        "queries": ["refund policy", "delivery delay compensation"], "missing": []})
+        "queries": ["refund policy", "delivery delay compensation"], "keywords": [], "missing": []})
     events = run(service, "refnd for a delayed delivry")
     done = next(d for k, d in events if k == "done")
     assert done["queries"] == ["refnd for a delayed delivry", "refund policy for a delayed delivery",
@@ -197,6 +202,28 @@ def test_search_is_prepared_and_the_answer_sees_the_interpretation():
     # The answering model sees what the user typed and how it was interpreted, to check it
     assert "refnd for a delayed delivry" in content
     assert "refund policy for a delayed delivery" in content and "delivery delay compensation" in content
+
+
+def test_keywords_add_searches_among_the_chunks_that_contain_them():
+    literal = Hit(score=0.6, text="The reimbursement form is in annex 3", payload={
+        "doc_id": "folder:annex.md", "chunk_index": 0, "title": "annex.md", "source": "folder"})
+    service, llm, _ = make([hit(0.9), literal], prepared={
+        "corrected": "refund form", "standalone": "where is the refund form", "queries": [],
+        "keywords": ["refund form", "reimbursement", "REIMBURSEMENT"], "missing": []})
+    events = run(service, "refnd form?")
+    done = next(d for k, d in events if k == "done")
+    assert done["keywords"] == ["refund form", "reimbursement"]
+    assert [t for t in service.store.texts if t] == ["refund form", "reimbursement"]
+    assert "annex.md" in [s["title"] for s in next(d for k, d in events if k == "sources")]
+    assert "reimbursement" in sent_messages(llm)[-1]["content"]
+
+
+def test_keyword_search_can_be_turned_off():
+    service, llm, _ = make([hit(0.9)], settings_kwargs={"keyword_search": False}, prepared={
+        "corrected": "q", "standalone": "q", "queries": [], "keywords": ["form"], "missing": []})
+    run(service, "q")
+    assert not any(service.store.texts)
+    assert "reimbursement" not in sent_messages(llm)[-1]["content"]
 
 
 def test_failed_preparation_searches_the_question_as_typed():
