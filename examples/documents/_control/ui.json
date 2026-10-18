@@ -1,0 +1,34 @@
+{
+  "name": "Company Handbook",
+  "short_name": "Handbook",
+  "tagline": "Ask about the company's policies and guides, with their sources.",
+  "welcome_title": "What would you like to know?",
+  "welcome_text": "Answers come only from the published handbook and cite the document they rely on.",
+  "placeholder": "Ask about a policy or a procedure…",
+  "suggestions": [
+    "How do I add new documents?",
+    "Who is responsible for the assistant?"
+  ],
+  "disclaimer": "Guidance based on the published documents; for a specific case, contact the owning team.",
+  "colors": {
+    "accent": "#2f6fde",
+    "accent_text": "#ffffff",
+    "accent_dark": "#5b8ff0",
+    "accent_text_dark": "#0d1117"
+  },
+  "context_fields": [
+    {
+      "id": "area",
+      "label": "Area",
+      "placeholder": "Whole company",
+      "field": "jurisdiction",
+      "boost": true
+    },
+    {
+      "id": "contract",
+      "label": "Contract type",
+      "placeholder": "Any contract",
+      "options": ["Full time", "Part time", "Contractor"]
+    }
+  ]
+}

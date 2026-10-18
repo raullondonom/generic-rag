@@ -185,9 +185,10 @@ def test_registry_metadata_reaches_the_index(corpus, monkeypatch):
     monkeypatch.setattr("rag.ingest.folder_source.extract", lambda path, opts: [Section("texto del decreto")])
     indexer = FakeIndexer()
     source = FolderSource(Settings(_env_file=None, docs_path=str(corpus), language="es"), indexer)
-    for path, rel in source._files(source.control()):
-        info = document_metadata(source.control().lookup().get(rel.lower()))
-        source._process(path, rel, info, full=False)
+    control = source.control()
+    for path, rel in source._files(control):
+        info = document_metadata(control.lookup().get(rel.lower()), control.index_fields)
+        source._process(path, rel, info, full=False, index_fields=control.index_fields)
     kw = indexer.indexed["folder:05_local/antioquia/barbosa/decree.pdf"]
     assert kw["title"] == "Decreto Barbosa"
     assert kw["url"] == "https://b.gov"

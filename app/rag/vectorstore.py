@@ -79,18 +79,32 @@ class VectorStore:
             wait=True,
         )
 
-    def search(self, vector: list[float], limit: int, exclude_statuses: list[str] | None = None) -> list[Hit]:
-        """Nearest chunks. Chunks whose registry `status` is in `exclude_statuses` (e.g. repealed) are skipped."""
+    def search(self, vector: list[float], limit: int, exclude_statuses: list[str] | None = None,
+               where: dict[str, str] | None = None) -> list[Hit]:
+        """Nearest chunks. Chunks whose registry `status` is in `exclude_statuses` (e.g. repealed) are skipped;
+        `where` keeps only the chunks whose payload has those values ({field: value})."""
         if not self.exists():
             return []
-        query_filter = None
-        if exclude_statuses:
-            query_filter = qm.Filter(must_not=[
-                qm.FieldCondition(key="status", match=qm.MatchAny(any=list(exclude_statuses)))
-            ])
+        must_not = [qm.FieldCondition(key="status", match=qm.MatchAny(any=list(exclude_statuses)))] \
+            if exclude_statuses else None
+        must = [qm.FieldCondition(key=k, match=qm.MatchValue(value=v)) for k, v in (where or {}).items()] or None
+        query_filter = qm.Filter(must=must, must_not=must_not) if must or must_not else None
         result = self.client.query_points(self.collection, query=vector, limit=limit, with_payload=True,
                                           query_filter=query_filter)
         return [Hit(score=p.score, text=p.payload.get("text", ""), payload=p.payload) for p in result.points]
+
+    def ensure_keyword_index(self, field: str) -> None:
+        """Payload index needed to list a field's values and filter by it (idempotent)."""
+        if self.exists():
+            self.client.create_payload_index(self.collection, field, qm.PayloadSchemaType.KEYWORD, wait=True)
+
+    def values(self, field: str, limit: int = 1000) -> list[str]:
+        """Distinct values of a payload field in the index (to fill a selector), alphabetical."""
+        if not self.exists():
+            return []
+        self.ensure_keyword_index(field)
+        result = self.client.facet(self.collection, key=field, limit=limit, exact=True)
+        return sorted((str(h.value) for h in result.hits if str(h.value).strip()), key=str.casefold)
 
     def count(self) -> int:
         if not self.exists():

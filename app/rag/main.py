@@ -2,21 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import threading
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import health
+from . import admin, branding, health
 from .chat import ChatService
 from .config import get_settings
 from .conversations import ConversationStore
@@ -40,6 +42,8 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger("rag")
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+DEFAULT_PROVIDER_KEY = "default_provider"
+FIELD_VALUES_TTL = 300  # seconds the values of an indexed field (selector options) are cached
 
 
 class Services:
@@ -58,8 +62,43 @@ class Services:
         self.feedback = FeedbackStore(self.db)
         self.control = ControlStore(self.db)
         self.chat = ChatService(settings, self.embedder, self.store, build_llms(settings, self.spend),
-                                self.conversations, notes=self.assistant_notes)
+                                self.conversations, notes=self.assistant_notes, describe=self.describe_collection)
+        self.chat.default_override = self.db.get_setting(DEFAULT_PROVIDER_KEY)
         self.scheduler = BackgroundScheduler(timezone="UTC")
+        self._field_values: dict[str, tuple[float, list[str]]] = {}
+
+    def field_values(self, field: str) -> list[str]:
+        cached = self._field_values.get(field)
+        if cached and time.monotonic() - cached[0] < FIELD_VALUES_TTL:
+            return cached[1]
+        try:
+            values = self.store.values(field)
+        except Exception:  # noqa: BLE001 - without the index the selector shows no options
+            log.exception("Could not list the values of %s", field)
+            return cached[1] if cached else []
+        self._field_values[field] = (time.monotonic(), values)
+        return values
+
+    def context_fields(self, brand: dict) -> list[dict]:
+        """The collection's selectors with their options (fixed, or the indexed values of their field)."""
+        out = []
+        for f in brand.get("context_fields", []):
+            options = f["options"] or self.field_values(f["field"])
+            excluded = {x.casefold() for x in f["exclude_options"]}
+            options = [o for o in options if o.casefold() not in excluded]
+            if options:
+                out.append({**f, "options": options})
+        return out
+
+    def set_default_provider(self, provider: str | None) -> None:
+        """Provider picked in the admin panel; it survives restarts. None = back to LLM_PROVIDER."""
+        with self.db.conn() as c:
+            if provider:
+                c.execute("INSERT INTO settings (key, value) VALUES (%s, %s) "
+                          "ON CONFLICT (key) DO UPDATE SET value = excluded.value", (DEFAULT_PROVIDER_KEY, provider))
+            else:
+                c.execute("DELETE FROM settings WHERE key = %s", (DEFAULT_PROVIDER_KEY,))
+        self.chat.default_override = provider
 
     def prepare_index(self) -> None:
         """If the embeddings model changed: empty state and the previous model's collections go away."""
@@ -88,6 +127,11 @@ class Services:
     def sync_confluence(self, full: bool = False) -> None:
         if self._embeddings_ready("confluence", lambda: self.sync_confluence(full)):
             self.confluence.sync(full=full)
+
+    @staticmethod
+    def describe_collection() -> str:
+        brand = branding.load(settings.docs_path, settings.control_dir, settings.language)
+        return f"{brand['name']}: {brand['tagline']}"
 
     @staticmethod
     def assistant_notes() -> str:
@@ -165,12 +209,30 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="Generic RAG", lifespan=lifespan)
 
 
+def require_admin(request: Request, x_admin_token: str | None = Header(default=None)) -> None:
+    """Admin API: ADMIN_TOKEN in the X-Admin-Token header, or, without a token set, this machine only."""
+    if not admin.authorized(settings.admin_token, x_admin_token, request.client.host if request.client else None):
+        raise HTTPException(401 if settings.admin_token else 403, "Administration access required")
+
+
+def is_admin(request: Request) -> bool:
+    try:
+        require_admin(request, request.headers.get("x-admin-token"))
+        return True
+    except HTTPException:
+        return False
+
+
+AdminOnly = Depends(require_admin)
+
+
 # ---------------------------------------------------------------- models
 
 class ChatRequest(BaseModel):
     question: str = Field(min_length=1, max_length=8000)
     conversation_id: str | None = None
-    provider: str | None = None
+    context: dict[str, str] = Field(default_factory=dict, max_length=branding.MAX_FIELDS)  # selector id -> value
+    provider: str | None = None  # honoured only for admin requests: the admin picks the provider
 
 
 class LookupRequest(BaseModel):
@@ -192,7 +254,11 @@ class ReindexRequest(BaseModel):
     full: bool = False
 
 
-# ---------------------------------------------------------------- routes
+class ProviderRequest(BaseModel):
+    provider: str | None = None  # None = back to the configured default
+
+
+# ---------------------------------------------------------------- public: end-user UI
 
 @app.get("/health")
 def get_health():
@@ -200,22 +266,64 @@ def get_health():
     return JSONResponse(result, status_code=200 if result["ok"] else 503)
 
 
+@app.get("/api/config")
+def ui_config():
+    """What the end-user UI needs: the collection's branding and whether it can answer."""
+    brand = branding.load(settings.docs_path, settings.control_dir, settings.language)
+    fields = [{k: f[k] for k in ("id", "label", "placeholder", "options")} for f in services.context_fields(brand)]
+    return {**brand, "context_fields": fields, "icon_url": "/api/branding/icon" if brand["icon"] else "/icon.svg",
+            "ready": bool(services.chat.llms)}
+
+
+def user_context(sent: dict[str, str]) -> list[dict]:
+    """Only values offered by the collection's selectors are accepted (the rest is ignored)."""
+    if not sent:
+        return []
+    brand = branding.load(settings.docs_path, settings.control_dir, settings.language)
+    out = []
+    for f in services.context_fields(brand):
+        value = (sent.get(f["id"]) or "").strip()
+        if value and value in f["options"]:
+            out.append({"id": f["id"], "label": f["label"], "value": value,
+                        "field": f["field"] if f["boost"] else None})
+    return out
+
+
+@app.get("/api/branding/icon")
+def branding_icon():
+    icon = branding.icon_path(settings.docs_path, settings.control_dir)
+    if icon is None:
+        return FileResponse(STATIC_DIR / "icon.svg", media_type="image/svg+xml")
+    return FileResponse(icon, media_type=branding.ICON_TYPES[icon.suffix.lower()])
+
+
+@app.get("/manifest.webmanifest")
+def web_manifest():
+    brand = branding.load(settings.docs_path, settings.control_dir, settings.language)
+    return JSONResponse(branding.manifest(brand, "/api/branding/icon" if brand["icon"] else "/icon.svg"),
+                        media_type="application/manifest+json")
+
+
 @app.post("/api/chat")
-async def chat(req: ChatRequest):
+async def chat(req: ChatRequest, request: Request):
+    provider = req.provider if req.provider and is_admin(request) else None
     try:
-        services.chat.pick_llm(req.provider)
+        services.chat.pick_llm(provider)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+    unavailable = json.dumps(t(settings.language, "unavailable"), ensure_ascii=False)
+    context = await asyncio.to_thread(user_context, req.context)
 
     async def events():
         try:
-            async for kind, data in services.chat.answer(req.question, req.conversation_id, req.provider):
+            async for kind, data in services.chat.answer(req.question, req.conversation_id, provider, context):
                 yield f"event: {kind}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
         except BudgetExhausted as e:
-            yield f"event: error\ndata: {json.dumps(str(e), ensure_ascii=False)}\n\n"
-        except Exception as e:  # noqa: BLE001
+            log.warning("Claude budget exhausted: %s", e)
+            yield f"event: error\ndata: {unavailable}\n\n"
+        except Exception:  # noqa: BLE001 - details go to the log, not to the end user
             log.exception("Error generating the answer")
-            yield f"event: error\ndata: {json.dumps(f'{type(e).__name__}: {e}', ensure_ascii=False)}\n\n"
+            yield f"event: error\ndata: {unavailable}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -258,49 +366,32 @@ def unrate_message(conversation_id: str, message_id: int):
     return {"deleted": services.feedback.clear(conversation_id, message_id)}
 
 
-@app.get("/api/feedback/summary")
-def feedback_summary(days: int = Query(30, ge=1, le=3650)):
-    """Aggregated ratings (no conversation content), to see which provider or model to improve."""
-    return {**services.feedback.summary(days), "reasons": list(REASONS)}
+@app.get("/api/file")
+def get_file(path: str):
+    """Serves a file of the documents folder (to open a cited source). Reserved "_" paths are not served."""
+    root = Path(settings.docs_path).resolve()
+    target = (root / path).resolve()
+    rel_parts = target.relative_to(root).parts if target.is_relative_to(root) else ()
+    if not rel_parts or any(p.startswith(settings.ignore_prefix_list) for p in rel_parts) or not target.is_file():
+        raise HTTPException(404, "File not found")
+    return FileResponse(target, filename=target.name, content_disposition_type="inline")
 
 
-@app.get("/api/control")
-def control_status(findings: int = Query(200, ge=0, le=10000)):
-    """Source control folder: registries and the last review (findings truncated to `findings`)."""
-    folder = ControlFolder.load(settings.docs_path, settings.control_dir)
-    last = services.control.last_run()
-    if last and last.get("findings") is not None:
-        last["total_findings"] = len(last["findings"])
-        last["findings"] = last["findings"][:findings]
-    return {
-        "configured": folder is not None,
-        "control_dir": settings.control_dir,
-        "registries": [p.name for p in folder.registry_files()] if folder else [],
-        "records": len(folder.rows()) if folder else 0,
-        "check_time": settings.control_check_time,
-        "running": services.control.lock.locked(),
-        "last_run": last,
-    }
+# ---------------------------------------------------------------- admin: panel at /admin
+
+@app.get("/api/admin/check", dependencies=[AdminOnly])
+def admin_check():
+    return {"ok": True, "token_required": bool(settings.admin_token)}
 
 
-@app.post("/api/control/check")
-def control_check(req: ControlCheckRequest):
-    """Starts a review in the background. It only reports: nothing is downloaded or reindexed."""
-    if ControlFolder.load(settings.docs_path, settings.control_dir) is None:
-        raise HTTPException(404, f"No control folder ({settings.control_dir}) in the documents folder")
-    if services.control.lock.locked():
-        return {"started": False, "reason": "already running"}
-    threading.Thread(target=services.check_sources, kwargs={"online": req.online}, daemon=True).start()
-    return {"started": True, "online": req.online}
-
-
-@app.get("/api/status")
-def status():
+@app.get("/api/admin/status", dependencies=[AdminOnly])
+def admin_status():
     llms = services.chat.llms
     return {
         "language": normalize(settings.language),
         "providers": list(llms),
-        "default_provider": settings.default_provider if settings.default_provider in llms else next(iter(llms), None),
+        "configured_provider": settings.default_provider,
+        "default_provider": services.chat.current_default(),
         "models": {name: llm.model for name, llm in llms.items()},
         "embed_model": settings.embedding_model,
         "chunks_in_index": services.store.count(),
@@ -319,12 +410,57 @@ def status():
     }
 
 
-@app.get("/api/documents")
+@app.put("/api/admin/provider", dependencies=[AdminOnly])
+def admin_provider(req: ProviderRequest):
+    """Provider used for every answer (the end user cannot choose). None = back to LLM_PROVIDER."""
+    if req.provider is not None and req.provider not in services.chat.llms:
+        raise HTTPException(400, f"Provider '{req.provider}' is not available")
+    services.set_default_provider(req.provider)
+    return {"default_provider": services.chat.current_default()}
+
+
+@app.get("/api/feedback/summary", dependencies=[AdminOnly])
+def feedback_summary(days: int = Query(30, ge=1, le=3650)):
+    """Aggregated ratings (no conversation content), to see which provider or model to improve."""
+    return {**services.feedback.summary(days), "reasons": list(REASONS)}
+
+
+@app.get("/api/control", dependencies=[AdminOnly])
+def control_status(findings: int = Query(200, ge=0, le=10000)):
+    """Source control folder: registries and the last review (findings truncated to `findings`)."""
+    folder = ControlFolder.load(settings.docs_path, settings.control_dir)
+    last = services.control.last_run()
+    if last and last.get("findings") is not None:
+        last["total_findings"] = len(last["findings"])
+        last["findings"] = last["findings"][:findings]
+    return {
+        "configured": folder is not None,
+        "control_dir": settings.control_dir,
+        "registries": [p.name for p in folder.registry_files()] if folder else [],
+        "records": len(folder.rows()) if folder else 0,
+        "check_time": settings.control_check_time,
+        "running": services.control.lock.locked(),
+        "last_run": last,
+    }
+
+
+@app.post("/api/control/check", dependencies=[AdminOnly])
+def control_check(req: ControlCheckRequest):
+    """Starts a review in the background. It only reports: nothing is downloaded or reindexed."""
+    if ControlFolder.load(settings.docs_path, settings.control_dir) is None:
+        raise HTTPException(404, f"No control folder ({settings.control_dir}) in the documents folder")
+    if services.control.lock.locked():
+        return {"started": False, "reason": "already running"}
+    threading.Thread(target=services.check_sources, kwargs={"online": req.online}, daemon=True).start()
+    return {"started": True, "online": req.online}
+
+
+@app.get("/api/documents", dependencies=[AdminOnly])
 def documents(source: str | None = None, status: str | None = None, limit: int = Query(500, le=5000)):
     return services.state.list(source=source, status=status, limit=limit)
 
 
-@app.post("/api/reindex")
+@app.post("/api/reindex", dependencies=[AdminOnly])
 def reindex(req: ReindexRequest):
     started = []
     if req.source in ("folder", "all"):
@@ -346,14 +482,9 @@ def reindex(req: ReindexRequest):
     return {"started": started, "full": req.full}
 
 
-@app.get("/api/file")
-def get_file(path: str):
-    """Serves a file of the documents folder (to open a cited source)."""
-    root = Path(settings.docs_path).resolve()
-    target = (root / path).resolve()
-    if not target.is_relative_to(root) or not target.is_file():
-        raise HTTPException(404, "File not found")
-    return FileResponse(target, filename=target.name, content_disposition_type="inline")
+@app.get("/admin", include_in_schema=False)
+def admin_page():
+    return FileResponse(STATIC_DIR / "admin.html")
 
 
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

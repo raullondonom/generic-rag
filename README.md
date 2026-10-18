@@ -21,7 +21,10 @@ The web UI is mobile first and also works in desktop browsers. Its texts, and th
 
 - **Persistent conversations.** The history is stored in Postgres. The browser only keeps the ids of its own conversations (in `localStorage`), so it can reopen or delete them later. There are no user accounts: the conversation id (a random UUID) acts as the key, and the server never lists conversations it was not asked for.
 - **Optional answer ratings.** Every answer can be rated thumbs up or down, with an optional reason and comment. Ratings are stored in Postgres, together with a copy of the question and answer, and they help find what to improve (see [Ratings](#ratings)).
-- **Claude spending control.** Before each call the worst-case cost is estimated against a monthly cap (`MONTHLY_BUDGET_USD`), and every call is recorded with its tokens and cost. The UI shows the month's spend. Prompt caching reuses the system prompt and the conversation history between turns, follow-up questions are rewritten with a cheaper model, and `DRY_RUN=true` simulates Claude without spending anything.
+- **Search preparation.** Before searching, a fast model (`ANTHROPIC_FAST_MODEL`, or the local model) fixes the spelling, rewrites the question self-contained (resolving references to the conversation) and splits it into one search per topic, in the terms the documents would use. The searches run together with the question as typed and their results are fused (reciprocal rank fusion, at most `MAX_CHUNKS_PER_DOC` chunks per document). The answering model gets the original question, the interpretation and the searches, and checks them: if the interpretation changed the meaning, it answers the original question. `QUERY_PREPARATION=false` turns it off.
+- **Clean end-user page, separate administration.** Users only see the conversation, the sources and the ratings. The provider, Claude's spend, the index, the source review, the ratings summary and the documents with problems live in the administration panel at `/admin` (see [Administration](#administration)).
+- **The collection's own look.** Name, icon, colors, welcome text, suggested questions, a disclaimer and optional selectors (for example a region or a product line) come from `ui.json` in the control folder, so each collection brings its identity (see [Look of the collection](#look-of-the-collection-uijson)). The page always shows that answers are written by an AI that may make mistakes, and that questions are stored.
+- **Claude spending control.** Before each call the worst-case cost is estimated against a monthly cap (`MONTHLY_BUDGET_USD`), and every call is recorded with its tokens and cost. The administration panel shows the month's spend. Prompt caching reuses the system prompt and the conversation history between turns, the search is prepared with a cheaper model, and `DRY_RUN=true` simulates Claude without spending anything.
 - **Secret redaction.** API keys, tokens, private keys, passwords and connection strings are replaced with `[REDACTED]` before indexing and before anything is sent to Claude. Personal data (emails, card or ID numbers) is optional.
 - **One collection per embeddings model.** When `EMBEDDING_MODEL` changes, everything is reindexed from scratch at startup and the previous model's collection is deleted, so vectors from different models are never mixed.
 - **Health checks.** `GET /health` checks the database, Qdrant, the embeddings service (it must load the configured model), the index and each AI provider.
@@ -83,7 +86,7 @@ Optional:
 
 - **NVIDIA GPU**: uncomment `COMPOSE_PATH_SEPARATOR` and `COMPOSE_FILE` in `.env`, set `TEI_GPU_IMAGE` for your GPU architecture, and run `docker compose up -d`.
 - **Claude**: set the API key (see [Secrets](#secrets)). Claude then answers and Ollama is not started. To keep both and choose in the UI: `COMPOSE_PROFILES=ollama,ollama-with-claude` and `OLLAMA_WITH_CLAUDE=true`.
-- **Confluence**: set the `CONFLUENCE_*` variables in `.env` (see below). It syncs once a day (`CONFLUENCE_SYNC_TIME`, 16:00 by default) and on demand from the side panel.
+- **Confluence**: set the `CONFLUENCE_*` variables in `.env` (see below). It syncs once a day (`CONFLUENCE_SYNC_TIME`, 16:00 by default) and on demand from the administration panel.
 - **Only Claude, no local model**: remove `ollama` from `COMPOSE_PROFILES` and leave `OLLAMA_URL` empty.
 - **Spanish UI and prompts**: `LANGUAGE=es`.
 
@@ -144,7 +147,8 @@ Every option is documented in [.env.example](.env.example). The most important o
 |---|---|---|
 | `LANGUAGE` | `en` | Language of the UI, the canned answers and the prompts (`en` / `es`) |
 | `LLM_PROVIDER` | `auto` | `auto` (Claude if there is a key, otherwise Ollama), `anthropic` or `ollama` |
-| `ANTHROPIC_MODEL` / `ANTHROPIC_FAST_MODEL` | `claude-opus-5-5` / `claude-haiku-5-5` | Model for answers / model to rewrite follow-up questions |
+| `ANTHROPIC_MODEL` / `ANTHROPIC_FAST_MODEL` | `claude-opus-5-5` / `claude-haiku-5-5` | Model for answers / model to prepare the search |
+| `ADMIN_TOKEN` | — | Token of the administration panel (`/admin`). Without it, the panel only opens from this machine |
 | `ANTHROPIC_EFFORT` | `medium` | Claude's reasoning depth |
 | `MONTHLY_BUDGET_USD` | `10` | Monthly cap for Claude |
 | `DRY_RUN` | `false` | Simulated Claude, no spending |
@@ -156,8 +160,10 @@ Every option is documented in [.env.example](.env.example). The most important o
 | `CONFLUENCE_ENABLED` | `false` | Turns Confluence Cloud sync on |
 | `CONFLUENCE_URL` / `CONFLUENCE_SPACES` | — | For example `https://your-company.atlassian.net/wiki` / keys of the spaces to index (shown in the URL: `/wiki/spaces/<KEY>/`) |
 | `CONFLUENCE_SYNC_TIME` | `16:00` | Daily Confluence sync time (HH:MM in `TZ`; empty = manual only). The first start syncs right away |
-| `FOLDER_SCAN_INTERVAL` | `60` | Seconds between folder scans (`0` = automatic updates off; reindex from the side panel) |
-| `TOP_K` / `MIN_SCORE` | `8` / `0.45` | Retrieved chunks and minimum similarity |
+| `FOLDER_SCAN_INTERVAL` | `60` | Seconds between folder scans (`0` = automatic updates off; reindex from `/admin`) |
+| `TOP_K` / `MIN_SCORE` | `10` / `0.45` | Retrieved chunks and minimum similarity |
+| `QUERY_PREPARATION` / `SEARCH_QUERIES_MAX` | `true` / `3` | Prepare the search (spelling, self-contained question, one search per topic) / searches per question |
+| `MAX_CHUNKS_PER_DOC` | `2` | Chunks of the same document in the context |
 | `IGNORE_PREFIXES` | `.,_,~$` | Files and folders starting with these are never indexed |
 | `CONTROL_DIR` / `CONTROL_CHECK_TIME` | `_control` / `16:00` | Source control folder and daily review time (empty = manual) |
 | `CONTROL_CHECK_ONLINE` | `true` | Also fingerprint the remote URLs in the review |
@@ -178,7 +184,8 @@ Any folder layout works, but these conventions make retrieval and maintenance be
 
 | File | Content |
 |---|---|
-| `control_config.json` | Registry file patterns, CSV delimiter, `column_aliases` (to read registries with other column names, e.g. in Spanish), review periods, expiry warning window, `document_extensions`, `excluded_dirs`, `assistant_notes_file`, `ocr_sidecar_suffix` |
+| `control_config.json` | Registry file patterns, CSV delimiter, `column_aliases` (to read registries with other column names, e.g. in Spanish), review periods, expiry warning window, `document_extensions`, `excluded_dirs`, `assistant_notes_file`, `ocr_sidecar_suffix`, `index_fields` (registry columns copied into the index, `["status", "valid_until", "jurisdiction"]` by default: they can fill the selectors of `ui.json` and prioritize the search), `ui_file` (`ui.json` by default) |
+| `ui.json` | Look of the collection's page (see below) |
 | `sources_*.csv` | One row per document (`file` relative to the documents root) with `title`, `doc_type`, `number`, `year`, `issuer`, `scope`, `jurisdiction`, `topic`, `download_url`, `reference_url`, `method`, `issue_date`, `retrieved_date`, `status`, `valid_until`, `review_frequency`, `change_check`, `notes`. A row with an empty `file` records a place where nothing was found. |
 
 What the app does with it:
@@ -187,7 +194,37 @@ What the app does with it:
 2. **Follows the collection's own instructions**: the file named in `assistant_notes_file` (inside the control folder) is added to the assistant's system prompt, e.g. "national law prevails over local rules". It is trusted operator text and it is not indexed.
 3. **Indexes OCR text instead of scanned PDFs**: a `<name>.ocr.txt` next to `<name>.pdf` (`OCR_SIDECAR_SUFFIX`, or `ocr_sidecar_suffix` in the config) is indexed in its place, split by its `--- Page n of N ---` markers, with the PDF's registry row; citations open the PDF.
 4. **Leaves repealed documents out of the search** (`EXCLUDE_STATUSES`, matched against the lowercase `status`). Folders listed in `excluded_dirs` are never indexed.
-5. **Reviews the sources every day** (`CONTROL_CHECK_TIME`, 16:00 by default; empty = only from the side panel), without AI and **without downloading or reindexing anything**. It reports expired and soon-to-expire documents, reviews due by `review_frequency`, registered files missing on disk, places with no document, documents with no registry row, unreachable URLs and **remote sources whose content changed** (SHA-256 of the file, or of the visible text for HTML pages; ETag / Last-Modified avoid downloading unchanged files; the first check only stores fingerprints). The documents folder stays read only: the review state lives in Postgres. The side panel shows the result; the full list is at `GET /api/control`, and `docker compose exec rag-app python -m rag.control check [--offline]` runs it from the command line.
+5. **Reviews the sources every day** (`CONTROL_CHECK_TIME`, 16:00 by default; empty = only from the administration panel), without AI and **without downloading or reindexing anything**. It reports expired and soon-to-expire documents, reviews due by `review_frequency`, registered files missing on disk, places with no document, documents with no registry row, unreachable URLs and **remote sources whose content changed** (SHA-256 of the file, or of the visible text for HTML pages; ETag / Last-Modified avoid downloading unchanged files; the first check only stores fingerprints). The documents folder stays read only: the review state lives in Postgres. The administration panel shows the result; the full list is at `GET /api/control`, and `docker compose exec rag-app python -m rag.control check [--offline]` runs it from the command line.
+
+## Look of the collection (`ui.json`)
+
+The control folder can hold a `ui.json` with the identity of the collection's page. Every key is optional; what is missing falls back to the generic texts of `LANGUAGE`. See [examples/documents/_control/ui.json](examples/documents/_control/ui.json).
+
+| Key | Content |
+|---|---|
+| `name` / `short_name` | Name of the page and of the installed app |
+| `tagline` | One line under the name; it also tells the search preparation what the collection is about |
+| `welcome_title` / `welcome_text` | Shown before the first question |
+| `placeholder` | Text of the question box |
+| `suggestions` | Up to 8 example questions, shown as buttons on the welcome screen |
+| `disclaimer` | Notice shown at the foot of the page, next to the fixed AI and privacy notices |
+| `colors` | `accent`, `accent_text`, `accent_dark`, `accent_text_dark` (hex), for light and dark mode |
+| `icon` | Image file inside the control folder (`.svg`, `.png`, `.jpg`, `.webp`) |
+| `context_fields` | Up to 4 optional selectors shown above the question box (see below) |
+
+**Selectors (`context_fields`).** They let users state their case once (a region, a product line, a type of contract…) instead of repeating it in every question. Each one has an `id`, a `label`, an optional `placeholder` (the "any" choice) and either:
+
+- `options`: a fixed list of values, or
+- `field`: a column listed in `index_fields`; its values in the index become the options (minus `exclude_options`). With `"boost": true`, an extra search restricted to the chosen value brings its documents up **without hiding the rest** of the collection.
+
+The choice always reaches the search preparation and the answering model as the user's context. Selectors are optional, and the choice is remembered in the browser only (`localStorage`); it is never stored on the server. The server only accepts values that the selector offers.
+
+## Administration
+
+The administration panel is at `/admin`. It is where the AI provider for every answer is chosen (users cannot choose it; the choice survives restarts), and where the panel shows Claude's spend, the index status with the reindex buttons, the source review, the ratings summary and the documents with errors or without text.
+
+- With `ADMIN_TOKEN` set (or the `GENRIC_RAG_ADMIN_TOKEN` environment variable), the panel asks for it once and keeps it in that browser; the admin API expects it in the `X-Admin-Token` header.
+- Without a token, the panel and its API only answer requests from this machine (localhost); requests through ngrok or from other machines are refused. Set a token before exposing the app.
 
 ## Several instances on one machine
 
@@ -199,7 +236,7 @@ Below every answer there are two buttons, 👍 and 👎. They are optional. A �
 
 Each rating keeps a copy of the question, the answer, the sources and the provider and model that answered, so it is not lost when the conversation is deleted or expires.
 
-- `GET /api/feedback/summary?days=30` returns only aggregated numbers: satisfaction, ratings by provider and model, and reasons.
+- The administration panel and `GET /api/feedback/summary?days=30` show only aggregated numbers: satisfaction, ratings by provider and model, and reasons.
 - The detail (questions, answers and comments) is exported from the command line by whoever runs the server:
 
 ```bash
@@ -212,7 +249,7 @@ Typical uses: a `not_found` answer often means a document is missing from the in
 
 ## External access with ngrok (testing)
 
-The app has no login, so the ngrok tunnel is protected with a user and password (`NGROK_BASIC_AUTH`).
+The end-user page has no login, so the ngrok tunnel is protected with a user and password (`NGROK_BASIC_AUTH`). The administration panel also needs `ADMIN_TOKEN` to open through the tunnel.
 
 1. Create the `NGROK_AUTHTOKEN` environment variable with your authtoken (dashboard.ngrok.com → *Your Authtoken*).
 2. Set `NGROK_BASIC_AUTH=user:password` in `.env`. The password must have at least 8 characters.
@@ -228,32 +265,36 @@ To close it, run `docker compose stop ngrok`. Keep in mind that anyone who gets 
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/api/chat` | `{question, conversation_id?, provider?}` → SSE stream with `meta` (includes the `conversation_id`), `sources`, `token`, `done` (includes the `message_id`) and `error` events |
+| `GET` | `/api/config` | Look of the collection (`ui.json`), with the selectors and their options |
+| `POST` | `/api/chat` | `{question, conversation_id?, context?}` → SSE stream with `meta` (includes the `conversation_id`), `sources`, `token`, `done` (includes the `message_id` and the `queries` searched) and `error` events. `context` maps selector ids to values; `provider` is honoured only for admin requests |
 | `POST` | `/api/conversations/lookup` | `{ids: [...]}` → summary of those conversations |
 | `GET` / `DELETE` | `/api/conversations/{id}` | Messages of a conversation (with their ratings) / delete it |
 | `PUT` / `DELETE` | `/api/conversations/{id}/messages/{message_id}/feedback` | `{rating: 1\|-1, reason?, comment?}` / remove the rating |
-| `GET` | `/api/feedback/summary?days=30` | Aggregated ratings |
-| `GET` | `/api/control?findings=200` | Control folder registries and the last source review |
-| `POST` | `/api/control/check` | `{online: true}` → starts a source review (no AI, nothing downloaded or reindexed) |
-| `GET` | `/api/status` | Index, providers, Claude spend and last sync |
-| `GET` | `/api/documents?source=&status=` | Processed documents (`indexed`, `unsupported`, `error`, `empty`) |
-| `POST` | `/api/reindex` | `{source: folder\|confluence\|all, full: false}` |
 | `GET` | `/api/file?path=` | Opens a cited file of the folder |
+| `GET` | `/api/admin/status` | **Admin.** Index, providers, Claude spend and last sync |
+| `PUT` | `/api/admin/provider` | **Admin.** `{provider}` → provider for every answer (`null` = back to `LLM_PROVIDER`) |
+| `GET` | `/api/feedback/summary?days=30` | **Admin.** Aggregated ratings |
+| `GET` | `/api/control?findings=200` | **Admin.** Control folder registries and the last source review |
+| `POST` | `/api/control/check` | **Admin.** `{online: true}` → starts a source review (no AI, nothing downloaded or reindexed) |
+| `GET` | `/api/documents?source=&status=` | **Admin.** Processed documents (`indexed`, `unsupported`, `error`, `empty`) |
+| `POST` | `/api/reindex` | **Admin.** `{source: folder\|confluence\|all, full: false}` |
 | `GET` | `/health` | Health of every service (200 or 503) |
 | `GET` | `/docs` | Interactive documentation (Swagger) |
+
+**Admin** routes need the `X-Admin-Token` header when `ADMIN_TOKEN` is set, or a request from this machine otherwise.
 
 Example:
 
 ```bash
 curl -N -X POST http://localhost:8000/api/chat -H "Content-Type: application/json" \
-  -d '{"question": "How do I add new documents?", "provider": "ollama"}'
+  -d '{"question": "How do I add new documents?"}'
 ```
 
 ## Operations
 
 - **Incremental ingestion**: only new or modified files (by hash) and Confluence pages or attachments with a new version are processed. Whatever is deleted at the source is also removed from the index.
 - **Reindex everything**: `POST /api/reindex {"source": "all", "full": true}`.
-- **Unsupported files or errors**: they show in the side panel and in `GET /api/documents?status=error`.
+- **Unsupported files or errors**: they show in the administration panel and in `GET /api/documents?status=error`.
 - **Tests**: `docker compose run --rm --no-deps rag-app pytest -q`. The tests that need Postgres run when `TEST_DATABASE_URL` is set (they use a temporary schema):
   ```bash
   docker compose run --rm -e TEST_DATABASE_URL=postgresql://rag:<password>@postgres:5432/rag rag-app pytest -q

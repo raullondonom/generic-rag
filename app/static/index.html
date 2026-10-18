@@ -3,13 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
-  <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#15181e" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#2f6fde">
   <meta name="description" content="Ask your documents, with cited answers.">
   <title>Document RAG</title>
-  <link rel="manifest" href="manifest.webmanifest">
-  <link rel="icon" href="icon.svg" type="image/svg+xml">
-  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" id="favicon" href="/icon.svg">
+  <link rel="apple-touch-icon" id="touch-icon" href="/icon.svg">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -18,17 +17,23 @@
       <button id="menu-btn" class="icon-btn" data-i18n-label="openMenu" aria-label="Open menu" aria-controls="drawer" aria-expanded="false">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
       </button>
-      <h1 id="conv-title" class="topbar-title">Document RAG</h1>
+      <div class="topbar-brand">
+        <img class="brand-icon" src="/icon.svg" alt="">
+        <h1 id="conv-title" class="topbar-title">Document RAG</h1>
+      </div>
       <button id="new-chat-top" class="icon-btn" data-i18n-label="newChat" aria-label="New conversation">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
       </button>
     </header>
 
-    <aside id="drawer" class="drawer" data-i18n-label="panel" aria-label="Conversations and settings">
+    <aside id="drawer" class="drawer" data-i18n-label="panel" aria-label="Conversations">
       <div class="drawer-head">
-        <div>
-          <div class="brand" data-i18n="appName">Document RAG</div>
-          <div class="muted small" data-i18n="tagline">Answers only from your documents.</div>
+        <div class="brand-block">
+          <img class="brand-icon large" src="/icon.svg" alt="">
+          <div>
+            <div class="brand" id="brand-name">Document RAG</div>
+            <div class="muted small" id="brand-tagline"></div>
+          </div>
         </div>
         <button id="close-drawer" class="icon-btn" data-i18n-label="closeMenu" aria-label="Close menu">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
@@ -37,36 +42,20 @@
 
       <button id="new-chat" class="primary wide" data-i18n="newChat">New conversation</button>
 
-      <section class="panel">
+      <section class="panel grow">
         <h2 data-i18n="conversations">Conversations</h2>
         <ul id="conv-list" class="conv-list"></ul>
       </section>
 
-      <section class="panel">
-        <h2><label for="provider" data-i18n="provider">AI provider</label></h2>
-        <select id="provider"></select>
-        <p id="model" class="muted small"></p>
-        <p id="spend" class="small"></p>
-      </section>
-
-      <section class="panel">
-        <h2 data-i18n="index">Index</h2>
-        <div id="status" class="small" data-i18n="loading">Loading…</div>
-        <div id="control" class="small"></div>
-        <div class="buttons">
-          <button class="secondary" data-source="folder" data-i18n="reindexFolder">Reindex folder</button>
-          <button class="secondary" id="control-check" data-i18n="ctlCheck" hidden>Review sources</button>
-          <button class="secondary" data-source="confluence" data-i18n="syncConfluence" hidden>Sync Confluence</button>
-        </div>
-        <p id="reindex-msg" class="muted small" aria-live="polite"></p>
-      </section>
+      <p class="notice small" id="drawer-notice"></p>
     </aside>
     <div id="backdrop" class="backdrop" hidden></div>
 
     <main class="main">
       <div id="messages" class="messages" aria-live="polite"></div>
+      <div id="context-bar" class="context-bar" hidden></div>
       <form id="form" class="composer">
-        <textarea id="question" rows="1" data-i18n-placeholder="placeholder" placeholder="Type your question…" data-i18n-label="question" aria-label="Question" required></textarea>
+        <textarea id="question" rows="1" placeholder="Type your question…" data-i18n-label="question" aria-label="Question" required></textarea>
         <button type="submit" id="send" class="send-btn" data-i18n-label="send" aria-label="Send">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6"/></svg>
         </button>
@@ -74,9 +63,11 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
         </button>
       </form>
+      <p class="footer-notice" id="footer-notice"></p>
     </main>
   </div>
 
+  <script src="common.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

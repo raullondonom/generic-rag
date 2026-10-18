@@ -11,7 +11,9 @@ from .config import Settings
 from .embeddings import Embedder
 from .i18n import t
 from .llm.base import LLM
-from .prompts import build_rewrite_message, build_user_message, rewrite_prompt, system_prompt
+from . import query_prep
+from .prompts import PREPARE_SCHEMA, build_prepare_message, build_user_message, prepare_prompt, system_prompt
+from .query_prep import Prepared
 from .redaction import Redactor
 from .vectorstore import Hit, VectorStore
 
@@ -58,10 +60,12 @@ def group_hits(hits: list[Hit], language: str = "en") -> list[dict]:
 
 class ChatService:
     def __init__(self, settings: Settings, embedder: Embedder, store: VectorStore, llms: dict[str, LLM],
-                 conversations, redactor: Redactor | None = None, notes=None):
-        """`notes`: callable returning the collection administrator's instructions (control folder), or None."""
+                 conversations, redactor: Redactor | None = None, notes=None, describe=None):
+        """`notes`: callable returning the collection administrator's instructions (control folder).
+        `describe`: callable returning a one-line description of the collection, used to prepare searches."""
         self.settings = settings
         self.notes = notes
+        self.describe = describe
         self.language = settings.language
         self.embedder = embedder
         self.store = store
@@ -69,36 +73,60 @@ class ChatService:
         self.conversations = conversations
         self.redactor = redactor or Redactor.from_settings(settings)
 
+    default_override: str | None = None  # provider picked in the admin panel
+
+    def current_default(self) -> str | None:
+        for name in (self.default_override, self.settings.default_provider):
+            if name in self.llms:
+                return name
+        return next(iter(self.llms), None)
+
     def pick_llm(self, provider: str | None) -> LLM:
-        name = provider or self.settings.default_provider
+        name = provider or self.current_default() or self.settings.default_provider
         if name not in self.llms:
             available = ", ".join(self.llms) or "none"
             raise ValueError(f"Provider '{name}' is not available. Available: {available}")
         return self.llms[name]
 
-    async def _search_query(self, llm: LLM, question: str, history: list[dict]) -> str:
-        if not history:
-            return question
+    async def prepare(self, llm: LLM, question: str, history: list[dict], context: list[dict] | None = None
+                      ) -> Prepared:
+        """Spelling, a self-contained question and search queries; the question as typed if it fails."""
+        if not self.settings.query_preparation:
+            return query_prep.from_model(None, question, 0)
         convo = "\n".join(f"{m['role']}: {m['content'][:1500]}" for m in history[-4:])
+        collection = ""
+        if self.describe:
+            try:
+                collection = self.describe() or ""
+            except Exception:  # noqa: BLE001 - the description is optional
+                log.exception("Could not describe the collection")
         try:
-            rewritten = await llm.complete(
-                rewrite_prompt(self.language),
-                [{"role": "user", "content": build_rewrite_message(convo, question, self.language)}],
+            data = await llm.complete_json(
+                prepare_prompt(self.language, collection, self.settings.search_queries_max),
+                [{"role": "user", "content": build_prepare_message(convo, question, self.language, context)}],
+                PREPARE_SCHEMA,
             )
-            return rewritten or question
-        except Exception:  # noqa: BLE001 - if it fails, search with the original question
-            log.exception("Could not rewrite the question")
-            return question
+        except Exception:  # noqa: BLE001 - if it fails, search with the question as typed
+            log.exception("Could not prepare the search")
+            data = None
+        return query_prep.from_model(data or None, question, self.settings.search_queries_max)
 
-    async def retrieve(self, query: str) -> list[Hit]:
-        vector = await asyncio.to_thread(self.embedder.embed_query, query)
-        hits = await asyncio.to_thread(self.store.search, vector, self.settings.top_k,
-                                       self.settings.excluded_status_list)
-        if not hits:
+    async def retrieve(self, queries: list[str], boosts: list[dict[str, str]] | None = None) -> list[Hit]:
+        """One search per query, fused (reciprocal rank fusion) with at most MAX_CHUNKS_PER_DOC per document.
+
+        Each boost ({indexed field: value}, from the user's selectors) adds searches restricted to it with
+        the first two queries: its documents come up without hiding the rest of the collection.
+        """
+        if not queries:
             return []
-        # Absolute threshold + margin relative to the best hit (drops weak matches)
-        cutoff = max(self.settings.min_score, hits[0].score - self.settings.score_margin)
-        return [h for h in hits if h.score >= cutoff]
+        vectors = await asyncio.to_thread(self.embedder.embed_queries, queries)
+        candidates = self.settings.top_k * 3
+        excluded = self.settings.excluded_status_list
+        searches = [(v, None) for v in vectors] + [(v, where) for where in boosts or [] for v in vectors[:2]]
+        results = [await asyncio.to_thread(self.store.search, v, candidates, excluded, where)
+                   for v, where in searches]
+        return query_prep.fuse(results, self.settings.top_k, self.settings.min_score, self.settings.score_margin,
+                               self.settings.max_chunks_per_doc)
 
     def _load_history(self, conversation_id: str) -> list[dict]:
         """Only complete question-answer pairs (a question whose answer failed is left out)."""
@@ -124,9 +152,10 @@ class ChatService:
         """What leaves the machine (Claude) is redacted; documents were already redacted when indexed."""
         return self.redactor(text).text if llm.remote and self.redactor.enabled else text
 
-    async def answer(self, question: str, conversation_id: str | None, provider: str | None
-                     ) -> AsyncIterator[tuple[str, object]]:
-        """Yields (kind, data) events: meta, sources, token, done. Saves the question and the answer."""
+    async def answer(self, question: str, conversation_id: str | None, provider: str | None,
+                     context: list[dict] | None = None) -> AsyncIterator[tuple[str, object]]:
+        """Yields (kind, data) events: meta, sources, token, done. Saves the question and the answer.
+        `context`: the user's selectors ({label, value, field}); `field` set = prioritize that value."""
         llm = self.pick_llm(provider)
         if conversation_id and await asyncio.to_thread(self.conversations.exists, conversation_id):
             history = await asyncio.to_thread(self._load_history, conversation_id)
@@ -153,8 +182,11 @@ class ChatService:
 
         safe_question = self._clean(llm, question)
         safe_history = [{**m, "content": self._clean(llm, m["content"])} for m in history]
-        query = await self._search_query(llm, safe_question, safe_history)
-        docs = group_hits(await self.retrieve(query), self.language)
+        context = context or []
+        prepared = await self.prepare(llm, safe_question, safe_history, context)
+        queries = prepared.search_queries(self.settings.search_queries_max)
+        boosts = [{c["field"]: c["value"]} for c in context if c.get("field")]
+        docs = group_hits(await self.retrieve(queries, boosts), self.language)
         sources = [{k: d[k] for k in SOURCE_FIELDS} for d in docs]
         yield "sources", sources
 
@@ -163,10 +195,10 @@ class ChatService:
             answer = t(self.language, "no_context")
             yield "token", answer
             mid = await save(guardrail="no_context")
-            yield "done", {"guardrail": "no_context", "query": query, "message_id": mid}
+            yield "done", {"guardrail": "no_context", "queries": queries, "message_id": mid}
             return
 
-        user_message = build_user_message(safe_question, docs, self.language)
+        user_message = build_user_message(safe_question, docs, self.language, prepared, context)
         messages = [*safe_history, {"role": "user", "content": user_message}]
         try:
             async for text in llm.stream(await asyncio.to_thread(self.system), messages):
@@ -177,4 +209,4 @@ class ChatService:
             await asyncio.shield(save(error=f"{type(e).__name__}: {e}"[:500]))
             raise
         mid = await save()
-        yield "done", {"query": query, "message_id": mid}
+        yield "done", {"queries": queries, "message_id": mid}

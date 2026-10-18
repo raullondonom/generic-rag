@@ -22,6 +22,7 @@ TEXTS: dict[str, dict[str, str]] = {
         ),
         # Notes appended to a model answer
         "refusal": "\n\n_The request was declined by the model's safety policies._",
+        "unavailable": "The assistant is not available right now. Please try again in a few minutes.",
         "truncated": "\n\n_(Answer truncated: ANTHROPIC_MAX_TOKENS was reached)_",
         "dry_run": "_(DRY_RUN: simulated answer, Claude was not called.)_\n\n{docs} document(s) were retrieved for this question",
         "over_budget": (
@@ -29,7 +30,7 @@ TEXTS: dict[str, dict[str, str]] = {
             "of USD {cap:.2f} remain. Use Ollama or raise MONTHLY_BUDGET_USD."
         ),
         "purpose_answer": "the answer",
-        "purpose_rewrite": "rewriting the question",
+        "purpose_rewrite": "preparing the search",
         # Source labels and locations inside files
         "local_folder": "Local folder",
         "page": "page {n}",
@@ -80,6 +81,7 @@ TEXTS: dict[str, dict[str, str]] = {
             "¿Qué necesitas consultar?"
         ),
         "refusal": "\n\n_La solicitud fue rechazada por las políticas de seguridad del modelo._",
+        "unavailable": "El asistente no está disponible en este momento. Inténtalo de nuevo en unos minutos.",
         "truncated": "\n\n_(Respuesta truncada: se alcanzó ANTHROPIC_MAX_TOKENS)_",
         "dry_run": "_(DRY_RUN: respuesta simulada, no se llamó a Claude.)_\n\nSe recuperaron {docs} documento(s) para esta pregunta",
         "over_budget": (
@@ -87,7 +89,7 @@ TEXTS: dict[str, dict[str, str]] = {
             "USD {available:.4f} de USD {cap:.2f}. Usa Ollama o sube MONTHLY_BUDGET_USD."
         ),
         "purpose_answer": "la respuesta",
-        "purpose_rewrite": "reformular la pregunta",
+        "purpose_rewrite": "preparar la búsqueda",
         "local_folder": "Carpeta local",
         "page": "página {n}",
         "sheet": "hoja {name}",

@@ -130,7 +130,8 @@ class FolderSource:
             log.warning("OCR text of %s has no usable text: reading the PDF instead", path.name)
         return extract(path, self.opts)
 
-    def _process(self, path: Path, rel: str, info: dict, full: bool, sidecar: str = "") -> int:
+    def _process(self, path: Path, rel: str, info: dict, full: bool, sidecar: str = "",
+                 index_fields: tuple[str, ...] = ()) -> int:
         """Indexes one file if it is new or changed. Returns 1 if it was (re)processed."""
         doc_id = f"{SOURCE}:{rel}"
         meta = dict(source=SOURCE, title=info.get("title") or path.name, location=rel, container=str(Path(rel).parent))
@@ -156,7 +157,7 @@ class FolderSource:
                 return 0
             context = context_lines(rel, info, self.lang)
             sections = self._sections(path, ocr_text, context)
-            extra = {k: info[k] for k in ("status", "valid_until", "jurisdiction") if k in info}
+            extra = {k: info[k] for k in index_fields if k in info}
             self.indexer.index(doc_id, url=info.get("url", ""), version=version, sections=sections,
                                context=context, extra=extra, **meta)
         except UnsupportedFormat as e:
@@ -179,11 +180,13 @@ class FolderSource:
             control = self.control()
             registry = control.lookup() if control else {}
             sidecar = self.sidecar_suffix(control)
+            fields = control.index_fields if control else ()
             seen: set[str] = set()
             changed = 0
             for path, rel in self._files(control, sidecar):
                 seen.add(f"{SOURCE}:{rel}")
-                changed += self._process(path, rel, document_metadata(registry.get(norm_path(rel))), full, sidecar)
+                info = document_metadata(registry.get(norm_path(rel)), fields)
+                changed += self._process(path, rel, info, full, sidecar, fields)
 
             removed = state.ids_for_source(SOURCE) - seen
             for doc_id in removed:

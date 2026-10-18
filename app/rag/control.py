@@ -44,11 +44,16 @@ DEFAULTS = {
     "warn_days_before_expiry": 30,
     "document_extensions": [".pdf"],
     "excluded_dirs": ["_control", "_archive"],
+    # Registry columns copied into the index: they can filter the search and fill the UI selectors
+    "index_fields": ["status", "valid_until", "jurisdiction"],
     "user_agent": "Mozilla/5.0 (compatible; generic-rag source control)",
     "timeout_seconds": 40,
 }
 SECTIONS = ("expired", "expiring", "changed", "review_due", "missing", "unreachable", "no_document", "unregistered")
 URL_RE = re.compile(r"https?://[^\s|]+")
+FIELD_NAME = re.compile(r"^[a-z][a-z0-9_]{0,40}$")
+# Payload keys the indexer writes itself: a registry column cannot replace them
+RESERVED_FIELDS = {"doc_id", "chunk_index", "text", "source", "title", "location", "url", "section", "container"}
 
 
 def parse_date(text: str | None) -> dt.date | None:
@@ -92,6 +97,13 @@ class ControlFolder:
             except (OSError, ValueError) as e:
                 log.warning("Could not read %s: %s (using defaults)", config_file, e)
         return cls(docs_root=docs_root, path=path, config=config)
+
+    @property
+    def index_fields(self) -> tuple[str, ...]:
+        fields = self.config.get("index_fields")
+        if not isinstance(fields, list):
+            return tuple(DEFAULTS["index_fields"])
+        return tuple(f for f in fields if isinstance(f, str) and FIELD_NAME.match(f) and f not in RESERVED_FIELDS)
 
     @property
     def ocr_sidecar_suffix(self) -> str:
@@ -167,12 +179,12 @@ class ControlFolder:
         return sorted(out)
 
 
-def document_metadata(row: dict | None) -> dict:
-    """The fields of a registry row that matter for retrieval and citations."""
+def document_metadata(row: dict | None, index_fields: tuple[str, ...] = ()) -> dict:
+    """The fields of a registry row that matter for retrieval and citations (plus the indexed ones)."""
     if not row:
         return {}
     meta = {k: row.get(k, "") for k in ("title", "doc_type", "number", "year", "issuer", "scope", "jurisdiction",
-                                        "status", "valid_until")}
+                                        "status", "valid_until", *index_fields)}
     meta["status"] = meta["status"].lower()
     meta["url"] = first_url(row.get("reference_url")) or first_url(row.get("download_url"))
     return {k: v for k, v in meta.items() if v}

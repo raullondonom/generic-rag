@@ -9,10 +9,10 @@ The RAG assistant answers questions using only the documents in the `documents/`
 ## How do I add documents?
 1. Copy the files into the `documents/` folder (subfolders are supported).
 2. Wait up to 60 seconds: the system detects new or modified files and indexes them.
-3. You can also press **Reindex folder** in the side panel.
+3. An administrator can also press **Update folder** in the administration panel (`/admin`).
 
 ## How do I change the AI model?
-The "AI provider" selector in the side panel lets you choose between:
+The administrator chooses it in the administration panel (`/admin`), and it applies to every answer:
 - **Claude (Anthropic)**: remote model; requires an Anthropic API key.
 - **Ollama (local)**: a model running on your own machine (GPU or CPU).
 

@@ -7,6 +7,7 @@ and the last message of the history, so every turn reuses the previous ones.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import AsyncIterator
 
@@ -19,6 +20,7 @@ from .spending import CHARS_PER_TOKEN, SpendTracker, Usage
 log = logging.getLogger(__name__)
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 CACHE = {"type": "ephemeral"}
+PREPARE_MAX_TOKENS = 1500
 
 
 def _chars(system: str, messages: list[dict]) -> int:
@@ -78,14 +80,24 @@ class AnthropicLLM:
         elif final.stop_reason == "max_tokens":
             yield t(self.language, "truncated")
 
-    async def complete(self, system: str, messages: list[dict]) -> str:
-        self.spend.check(self.fast_model, _chars(system, messages), 2000, t(self.language, "purpose_rewrite"))
-        async with self._stream_ctx(self.fast_model, system, messages, "low", 2000) as stream:
-            final = await stream.get_final_message()
-        self.spend.record(final, "rewrite")
-        if final.stop_reason == "refusal":
-            return ""
-        return "".join(b.text for b in final.content if b.type == "text").strip()
+    async def complete_json(self, system: str, messages: list[dict], schema: dict) -> dict:
+        """Short structured answer from the fast model (preparing the search). {} if it is unusable."""
+        self.spend.check(self.fast_model, _chars(system, messages), PREPARE_MAX_TOKENS, t(self.language, "purpose_rewrite"))
+        final = await self._client.messages.create(
+            model=self.fast_model,
+            max_tokens=PREPARE_MAX_TOKENS,
+            system=[{"type": "text", "text": system, "cache_control": CACHE}],
+            messages=messages,
+            output_config={"effort": "low", "format": {"type": "json_schema", "schema": schema}},
+        )
+        self.spend.record(final, "prepare")
+        if final.stop_reason in ("refusal", "max_tokens"):
+            return {}
+        text = next((b.text for b in final.content if b.type == "text"), "")
+        try:
+            return json.loads(text)
+        except ValueError:
+            return {}
 
 
 class DryRunLLM:
@@ -111,6 +123,6 @@ class DryRunLLM:
                       output_tokens=int(len(text) / CHARS_PER_TOKEN))
         self.spend.record_usage(self._real_model, "answer", usage, 0.0, simulated=True)
 
-    async def complete(self, system: str, messages: list[dict]) -> str:  # noqa: ARG002
-        # Without a model the question cannot be rewritten: search with the last question as-is
-        return messages[-1]["content"].rsplit(":", 1)[-1].strip()
+    async def complete_json(self, system: str, messages: list[dict], schema: dict) -> dict:  # noqa: ARG002
+        # Without a model the search cannot be prepared: it runs with the question as typed
+        return {}

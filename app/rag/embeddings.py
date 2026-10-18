@@ -63,3 +63,6 @@ class Embedder:
 
     def embed_query(self, text: str) -> list[float]:
         return self._embed([self._query_prefix + text])[0]
+
+    def embed_queries(self, texts: list[str]) -> list[list[float]]:
+        return self._embed([self._query_prefix + t for t in texts])

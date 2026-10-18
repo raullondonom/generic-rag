@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     # Language of everything the user reads: UI, canned answers, prompts (en | es)
     language: str = "en"
 
+    # Administration panel (/admin) and its API. Empty = only from this machine (not through ngrok)
+    admin_token: str = ""
+
     # Default AI provider: auto = Claude if ANTHROPIC_API_KEY is set, otherwise Ollama
     llm_provider: str = "auto"
 
@@ -55,7 +58,12 @@ class Settings(BaseSettings):
     # Retrieval
     qdrant_url: str = "http://qdrant:6333"
     collection_prefix: str = "documents"
-    top_k: int = 8
+    top_k: int = 10
+    # Before searching, a fast model fixes the spelling, rewrites the question and writes one search
+    # query per topic; the answering model checks that interpretation against the original
+    query_preparation: bool = True
+    search_queries_max: int = 3
+    max_chunks_per_doc: int = 2  # so a single long document cannot fill the whole context
     min_score: float = 0.45
     score_margin: float = 0.12
     chunk_size: int = 3000

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#2f6fde">
+  <meta name="robots" content="noindex">
+  <title>Administration</title>
+  <link rel="icon" id="favicon" href="/icon.svg">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="admin">
+  <header class="admin-bar">
+    <div class="brand-block">
+      <img class="brand-icon" src="/icon.svg" alt="">
+      <div>
+        <div class="brand" id="brand-name">Document RAG</div>
+        <div class="muted small" data-i18n="adminTitle">Administration</div>
+      </div>
+    </div>
+    <div class="admin-actions">
+      <button id="refresh" class="secondary" data-i18n="refresh">Refresh</button>
+      <button id="logout" class="secondary" data-i18n="logout" hidden>Forget token</button>
+      <a class="secondary link-btn" href="/" data-i18n="backToApp">Back to the assistant</a>
+    </div>
+  </header>
+
+  <main class="admin-main">
+    <section id="gate" class="card gate" hidden>
+      <h2 data-i18n="tokenTitle">Administration access</h2>
+      <p id="gate-text" data-i18n="tokenText">Enter the administration token (ADMIN_TOKEN).</p>
+      <form id="gate-form" class="row">
+        <input id="token" type="password" autocomplete="current-password" data-i18n-placeholder="tokenPh" data-i18n-label="tokenPh" placeholder="Token" required>
+        <button type="submit" class="primary" data-i18n="tokenEnter">Enter</button>
+      </form>
+      <p id="gate-error" class="error small"></p>
+    </section>
+
+    <div id="panel" class="admin-grid" hidden>
+      <section class="card">
+        <h2 data-i18n="provider">AI provider</h2>
+        <select id="provider" data-i18n-label="provider"></select>
+        <p class="muted small" id="model"></p>
+        <p class="muted small" data-i18n="providerHelp"></p>
+        <p class="small" id="provider-msg"></p>
+        <div id="spend"></div>
+      </section>
+
+      <section class="card">
+        <h2 data-i18n="index">Index</h2>
+        <div id="status"></div>
+        <div class="buttons">
+          <button class="secondary" data-source="folder" data-i18n="reindexFolder">Update folder</button>
+          <button class="secondary" data-source="folder" data-full="1" data-i18n="reindexFull">Reindex everything</button>
+          <button class="secondary" data-source="confluence" data-i18n="syncConfluence" hidden>Sync Confluence</button>
+        </div>
+        <p class="muted small" id="reindex-msg"></p>
+      </section>
+
+      <section class="card" id="control-card">
+        <h2 data-i18n="ctlTitle">Source control</h2>
+        <div id="control"></div>
+        <div class="buttons"><button id="control-check" class="secondary" data-i18n="ctlCheck" hidden>Review sources</button></div>
+        <p class="muted small" id="control-msg"></p>
+      </section>
+
+      <section class="card">
+        <h2 data-i18n="ratings">Ratings (30 days)</h2>
+        <div id="ratings"></div>
+      </section>
+
+      <section class="card wide-card">
+        <h2 data-i18n="problems">Documents with problems</h2>
+        <div id="problems"></div>
+      </section>
+    </div>
+  </main>
+
+  <script src="common.js"></script>
+  <script src="admin.js"></script>
+</body>
+</html>

@@ -14,6 +14,6 @@ class LLM(Protocol):
         """Streams the answer (text fragments)."""
         ...
 
-    async def complete(self, system: str, messages: list[dict]) -> str:
-        """Short answer without streaming (used to rewrite the question)."""
+    async def complete_json(self, system: str, messages: list[dict], schema: dict) -> dict:
+        """Short structured answer following a JSON schema (used to prepare the search). {} if unusable."""
         ...

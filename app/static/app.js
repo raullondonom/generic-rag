@@ -1,12 +1,11 @@
 "use strict";
+// End-user page: conversation, history, sources and ratings. Everything internal lives in /admin.
 
-const $ = (sel) => document.querySelector(sel);
 const messagesEl = $("#messages");
 const form = $("#form");
 const input = $("#question");
 const sendBtn = $("#send");
 const stopBtn = $("#stop");
-const providerSel = $("#provider");
 const drawer = $("#drawer");
 const backdrop = $("#backdrop");
 const menuBtn = $("#menu-btn");
@@ -18,20 +17,10 @@ const touch = window.matchMedia("(pointer: coarse)");
 let currentId = null;   // open conversation (null = new)
 let busy = false;
 let controller = null;  // AbortController of the answer in progress
-let models = {};
-let lastStatus = null;
+let brand = { name: "", tagline: "", welcome_title: "", welcome_text: "", suggestions: [], disclaimer: "" };
 
-// ------------------------------------------------------------ local storage
-// The browser only keeps the ids; the history lives on the server.
+// ------------------------------------------------------------ saved conversation ids (the history lives on the server)
 
-const store = {
-  get(key, fallback) {
-    try { const v = localStorage.getItem(key); return v === null ? fallback : JSON.parse(v); } catch { return fallback; }
-  },
-  set(key, value) {
-    try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* private mode or blocked storage */ }
-  },
-};
 const savedIds = () => store.get("rag.conversations", []);
 function rememberId(id) {
   store.set("rag.conversations", [id, ...savedIds().filter((x) => x !== id)].slice(0, MAX_SAVED));
@@ -40,101 +29,75 @@ function forgetId(id) {
   store.set("rag.conversations", savedIds().filter((x) => x !== id));
 }
 
-// ------------------------------------------------------------ texts (LANGUAGE=en|es on the server)
+// ------------------------------------------------------------ user context (ui.json context_fields), kept in this browser
 
-const I18N = {
-  en: {
-    appName: "Document RAG", tagline: "Answers only from your documents.", newChat: "New conversation",
-    conversations: "Conversations", provider: "AI provider", index: "Index", loading: "Loading…",
-    reindexFolder: "Reindex folder", syncConfluence: "Sync Confluence", placeholder: "Type your question…",
-    question: "Question", send: "Send", stop: "Stop answer", openMenu: "Open menu", closeMenu: "Close menu",
-    panel: "Conversations and settings",
-    emptyTitle: "What would you like to look up?",
-    emptyText: "Answers are based only on the indexed documents and cite their sources.",
-    noConversations: "No saved conversations", loadFailed: "Could not load them",
-    deleteLabel: 'Delete "{title}"', deleteConfirm: 'Delete the conversation "{title}"? This cannot be undone.',
-    incomplete: "Incomplete answer: {error}", stopped: "Answer stopped.", error: "Error: {msg}",
-    sources: "Sources ({n})", similarity: "similarity", copy: "Copy", copied: "Copied", copyFailed: "Could not copy",
-    model: "Model: {model}", noProviders: "No providers configured",
-    dryRun: "Simulated mode (DRY_RUN): nothing is spent.", spendMonth: "This month: USD {spent} of {cap}",
-    cache: "cache {pct}%", budgetUsed: "{pct}% of the cap used",
-    chunks: "{n} chunks", noDocs: "no documents", redacted: "{n} sensitive values redacted", syncing: "Syncing…", last: "Last: {date}", pending: "Pending",
-    statusFailed: "Could not get the status", started: "Started: {list}",
-    official: "official source", stLbl: "status", validUntil: "valid until {date}", expiredOn: "expired on {date}",
-    ctlTitle: "Source control", ctlRecords: "{records} records in {n} registries", ctlNever: "Not reviewed yet",
-    ctlLast: "Last review: {date}", ctlOffline: " (offline)", ctlRunning: "Reviewing sources…",
-    ctlError: "Review failed: {error}", ctlNothing: "Nothing pending", ctlDetails: "Pending items",
-    ctlMore: "{n} more: see GET /api/control", ctlCheck: "Review sources", ctlStarted: "Source review started",
-    sec_expired: "expired", sec_expiring: "expiring soon", sec_changed: "changed online", sec_review_due: "review due",
-    sec_missing: "missing on disk", sec_unreachable: "unreachable URLs", sec_no_document: "no document found",
-    sec_unregistered: "without a registry row",
-    folder: "Local folder", confluence: "Confluence", daily: "Every day at {time}", autoOff: "Automatic updates off: use the button",
-    st_indexed: "indexed", st_unsupported: "unsupported", st_error: "with errors", st_empty: "no text",
-    p_anthropic: "Claude (Anthropic)", p_ollama: "Ollama (local)",
-    rateUp: "Useful answer", rateDown: "Not useful", reasonTitle: "What went wrong? (optional)",
-    reason_wrong: "Incorrect", reason_incomplete: "Incomplete", reason_not_found: "Didn't find the info",
-    reason_bad_sources: "Wrong sources", reason_other: "Other", commentPh: "Comment (optional)",
-    sendFeedback: "Send", skip: "Skip", thanks: "Thanks for your feedback",
-  },
-  es: {
-    appName: "RAG Documental", tagline: "Responde solo con tus documentos.", newChat: "Nueva conversación",
-    conversations: "Conversaciones", provider: "Proveedor de IA", index: "Índice", loading: "Cargando…",
-    reindexFolder: "Reindexar carpeta", syncConfluence: "Sincronizar Confluence", placeholder: "Escribe tu pregunta…",
-    question: "Pregunta", send: "Enviar", stop: "Detener respuesta", openMenu: "Abrir menú", closeMenu: "Cerrar menú",
-    panel: "Conversaciones y configuración",
-    emptyTitle: "¿Qué quieres consultar?",
-    emptyText: "Las respuestas se basan únicamente en los documentos indexados y citan sus fuentes.",
-    noConversations: "Sin conversaciones guardadas", loadFailed: "No se pudieron cargar",
-    deleteLabel: 'Borrar "{title}"', deleteConfirm: '¿Borrar la conversación "{title}"? No se puede deshacer.',
-    incomplete: "Respuesta incompleta: {error}", stopped: "Respuesta detenida.", error: "Error: {msg}",
-    sources: "Fuentes ({n})", similarity: "similitud", copy: "Copiar", copied: "Copiado", copyFailed: "No se pudo copiar",
-    model: "Modelo: {model}", noProviders: "Sin proveedores configurados",
-    dryRun: "Modo simulado (DRY_RUN): no se gasta.", spendMonth: "Este mes: USD {spent} de {cap}",
-    cache: "caché {pct}%", budgetUsed: "{pct}% del tope usado",
-    chunks: "{n} fragmentos", noDocs: "sin documentos", redacted: "{n} valores sensibles redactados", syncing: "Sincronizando…", last: "Última: {date}", pending: "Pendiente",
-    statusFailed: "No se pudo obtener el estado", started: "Iniciado: {list}",
-    official: "fuente oficial", stLbl: "estado", validUntil: "vigente hasta {date}", expiredOn: "vencido el {date}",
-    ctlTitle: "Control de fuentes", ctlRecords: "{records} registros en {n} archivos de registro", ctlNever: "Sin revisar todavía",
-    ctlLast: "Última revisión: {date}", ctlOffline: " (sin conexión)", ctlRunning: "Revisando fuentes…",
-    ctlError: "La revisión falló: {error}", ctlNothing: "Nada pendiente", ctlDetails: "Pendientes",
-    ctlMore: "{n} más: ver GET /api/control", ctlCheck: "Revisar fuentes", ctlStarted: "Revisión de fuentes iniciada",
-    sec_expired: "vencidos", sec_expiring: "por vencer", sec_changed: "cambiaron en línea", sec_review_due: "revisión pendiente",
-    sec_missing: "faltan en disco", sec_unreachable: "URLs inaccesibles", sec_no_document: "sin documento encontrado",
-    sec_unregistered: "sin fila en el registro",
-    folder: "Carpeta local", confluence: "Confluence", daily: "Todos los días a las {time}", autoOff: "Actualización automática apagada: usa el botón",
-    st_indexed: "indexados", st_unsupported: "no soportados", st_error: "con error", st_empty: "sin texto",
-    p_anthropic: "Claude (Anthropic)", p_ollama: "Ollama (local)",
-    rateUp: "Respuesta útil", rateDown: "No me sirvió", reasonTitle: "¿Qué falló? (opcional)",
-    reason_wrong: "Incorrecta", reason_incomplete: "Incompleta", reason_not_found: "No encontró la info",
-    reason_bad_sources: "Fuentes equivocadas", reason_other: "Otro", commentPh: "Comentario (opcional)",
-    sendFeedback: "Enviar", skip: "Omitir", thanks: "Gracias por tu opinión",
-  },
-};
+let contextFields = [];
 
-let lang = store.get("rag.language", "en");
-
-function tr(key, vars = {}) {
-  const text = (I18N[lang] && I18N[lang][key]) || I18N.en[key] || key;
-  return text.replace(/\{(\w+)\}/g, (_, k) => (k in vars ? vars[k] : `{${k}}`));
+function savedContext() {
+  const saved = store.get("rag.context", {});
+  return saved && typeof saved === "object" ? saved : {};
 }
 
-function applyLanguage(next) {
-  lang = I18N[next] ? next : "en";
-  store.set("rag.language", lang);
-  document.documentElement.lang = lang;
-  document.querySelectorAll("[data-i18n]").forEach((el) => { el.textContent = tr(el.dataset.i18n); });
-  document.querySelectorAll("[data-i18n-label]").forEach((el) => el.setAttribute("aria-label", tr(el.dataset.i18nLabel)));
-  document.querySelectorAll("[data-i18n-placeholder]").forEach((el) => { el.placeholder = tr(el.dataset.i18nPlaceholder); });
-  const empty = messagesEl.querySelector(".empty");
-  if (empty) showEmpty();
-  if (!currentId) setTitle(null);
+function currentContext() {
+  const saved = savedContext();
+  const out = {};
+  for (const f of contextFields) if (saved[f.id] && f.options.includes(saved[f.id])) out[f.id] = saved[f.id];
+  return out;
+}
+
+function renderContext(fields) {
+  contextFields = fields || [];
+  const bar = $("#context-bar");
+  bar.hidden = !contextFields.length;
+  const chosen = currentContext();
+  bar.replaceChildren(...contextFields.map((f) => {
+    const label = document.createElement("label");
+    label.className = "ctx";
+    const name = document.createElement("span");
+    name.textContent = f.label;
+    const sel = document.createElement("select");
+    sel.innerHTML = `<option value="">${escapeHtml(f.placeholder || tr("any"))}</option>` +
+      f.options.map((o) => `<option${chosen[f.id] === o ? " selected" : ""}>${escapeHtml(o)}</option>`).join("");
+    sel.classList.toggle("set", !!chosen[f.id]);
+    sel.addEventListener("change", () => {
+      const saved = savedContext();
+      if (sel.value) saved[f.id] = sel.value; else delete saved[f.id];
+      store.set("rag.context", saved);
+      sel.classList.toggle("set", !!sel.value);
+    });
+    label.append(name, sel);
+    return label;
+  }));
+}
+
+// ------------------------------------------------------------ branding of the collection (_control/ui.json)
+
+async function loadBranding() {
+  try {
+    const c = await (await fetch("/api/config")).json();
+    brand = c;
+    applyLanguage(c.language);
+    applyColors(c.colors);
+    document.querySelectorAll(".brand-icon").forEach((img) => { img.src = c.icon_url; });
+    $("#favicon").href = c.icon_url;
+    $("#touch-icon").href = c.icon_url;
+    $("#brand-name").textContent = c.name;
+    $("#brand-tagline").textContent = c.tagline;
+    document.querySelector('meta[name="description"]').setAttribute("content", c.tagline);
+    input.placeholder = c.placeholder;
+    renderContext(c.context_fields);
+    const notices = [c.disclaimer, tr("aiNotice"), tr("privacyNotice")].filter(Boolean).join(" ");
+    $("#footer-notice").textContent = notices;
+    $("#drawer-notice").textContent = notices;
+    if (!c.ready) $("#footer-notice").textContent = tr("notReady");
+    if (!currentId) setTitle(null);
+    if (messagesEl.querySelector(".empty")) showEmpty();
+  } catch {
+    applyLanguage(lang);
+  }
 }
 
 // ------------------------------------------------------------ minimal, safe Markdown
-
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-}
 
 function inline(s) {
   return escapeHtml(s)
@@ -208,8 +171,16 @@ desktop.addEventListener("change", () => setDrawer(false));
 // ------------------------------------------------------------ messages
 
 function showEmpty() {
-  messagesEl.innerHTML = `<div class="empty"><h2>${escapeHtml(tr("emptyTitle"))}</h2>` +
-    `<p class="muted">${escapeHtml(tr("emptyText"))}</p></div>`;
+  const suggestions = (brand.suggestions || []).map((s) =>
+    `<button type="button" class="suggestion">${escapeHtml(s)}</button>`).join("");
+  messagesEl.innerHTML = `<div class="empty">
+      <img class="brand-icon hero" src="${escapeHtml(brand.icon_url || "/icon.svg")}" alt="">
+      <h2>${escapeHtml(brand.welcome_title)}</h2>
+      <p class="muted">${escapeHtml(brand.welcome_text)}</p>
+      ${suggestions ? `<p class="small muted">${escapeHtml(tr("suggestionsTitle"))}</p><div class="suggestions">${suggestions}</div>` : ""}
+    </div>`;
+  messagesEl.querySelectorAll(".suggestion").forEach((b) =>
+    b.addEventListener("click", () => { if (!busy) ask(b.textContent); }));
 }
 
 function addMessage(role, text) {
@@ -231,26 +202,11 @@ function scrollDown() {
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
-function sourceLink(s) {
-  // Folder documents open the local file; the official URL from the source registry goes next to it
-  if (s.source === "folder") {
-    const local = `<a href="/api/file?path=${encodeURIComponent(s.location)}" target="_blank">${escapeHtml(s.title)}</a>`;
-    return s.url ? `${local} · <a href="${escapeHtml(s.url)}" target="_blank" rel="noopener">${escapeHtml(tr("official"))}</a>` : local;
-  }
-  if (s.url) return `<a href="${escapeHtml(s.url)}" target="_blank" rel="noopener">${escapeHtml(s.title)}</a>`;
-  return escapeHtml(s.title);
-}
-
 function validity(s) {
-  // Returns HTML: every part is escaped here
-  const parts = [];
-  if (s.status) parts.push(escapeHtml(`${tr("stLbl")}: ${s.status}`));
-  if (s.valid_until) {
-    const expired = s.valid_until < new Date().toISOString().slice(0, 10);
-    parts.push(expired ? `<span class="error">${escapeHtml(tr("expiredOn", { date: s.valid_until }))}</span>`
-      : escapeHtml(tr("validUntil", { date: s.valid_until })));
-  }
-  return parts.length ? ` · ${parts.join(" · ")}` : "";
+  if (!s.valid_until) return "";
+  const expired = s.valid_until < new Date().toISOString().slice(0, 10);
+  return expired ? ` · <span class="error">${escapeHtml(tr("expiredOn", { date: s.valid_until }))}</span>`
+    : ` · ${escapeHtml(tr("validUntil", { date: s.valid_until }))}`;
 }
 
 function renderSources(wrap, sources) {
@@ -258,9 +214,12 @@ function renderSources(wrap, sources) {
   const det = document.createElement("details");
   det.className = "sources";
   det.innerHTML = `<summary>${escapeHtml(tr("sources", { n: sources.length }))}</summary><ol>` + sources.map((s) => {
-    const where = s.source === "folder" ? s.location : s.source_label;
-    const secs = s.sections && s.sections.length ? ` · ${escapeHtml(s.sections.slice(0, 4).join(", "))}` : "";
-    return `<li value="${s.n}">${sourceLink(s)} <span class="muted">— ${escapeHtml(where)}${secs}${validity(s)} · ${tr("similarity")} ${s.score}</span></li>`;
+    const local = s.source === "folder" ? `/api/file?path=${encodeURIComponent(s.location)}` : "";
+    const main = s.url || local;
+    const title = main ? `<a href="${escapeHtml(main)}" target="_blank" rel="noopener">${escapeHtml(s.title)}</a>` : escapeHtml(s.title);
+    const extra = s.url && local ? ` · <a href="${escapeHtml(local)}" target="_blank">${escapeHtml(tr("file"))}</a>` : "";
+    const where = s.jurisdiction ? ` · ${escapeHtml(s.jurisdiction)}` : "";
+    return `<li value="${s.n}">${title}<span class="muted">${extra}${where}${validity(s)}</span></li>`;
   }).join("") + "</ol>";
   wrap.appendChild(det);
 }
@@ -301,14 +260,8 @@ function renderRating(meta, wrap, conversationId, messageId, saved) {
     const previous = state;
     state = next;
     paint();
-    try {
-      await sendFeedback(conversationId, messageId, next.rating ? next : null);
-    } catch {
-      state = previous;
-      paint();
-    }
+    try { await sendFeedback(conversationId, messageId, next.rating ? next : null); } catch { state = previous; paint(); }
   };
-
   const closeForm = () => { const f = wrap.querySelector(".feedback-form"); if (f) f.remove(); };
   const openForm = () => {
     closeForm();
@@ -348,7 +301,6 @@ function renderRating(meta, wrap, conversationId, messageId, saved) {
     wrap.appendChild(f);
     if (!touch.matches) area.focus();
   };
-
   up.addEventListener("click", () => {
     closeForm();
     save(state.rating === 1 ? { rating: 0 } : { rating: 1, reason: null, comment: "" });
@@ -361,14 +313,9 @@ function renderRating(meta, wrap, conversationId, messageId, saved) {
   paint();
 }
 
-function renderMeta(wrap, provider, model, text, rating = null) {
+function renderMeta(wrap, text, rating = null) {
   const m = document.createElement("div");
   m.className = "meta";
-  if (provider) {
-    const span = document.createElement("span");
-    span.textContent = `${provider} · ${model}`;
-    m.appendChild(span);
-  }
   if (rating && rating.messageId && currentId) renderRating(m, wrap, currentId, rating.messageId, rating);
   if (text) {
     const copy = document.createElement("button");
@@ -384,8 +331,9 @@ function renderMeta(wrap, provider, model, text, rating = null) {
 }
 
 function setTitle(title) {
-  $("#conv-title").textContent = title || tr("appName");
-  document.title = title ? `${title} · ${tr("appName")}` : tr("appName");
+  const name = brand.name || document.title;
+  $("#conv-title").textContent = title || name;
+  document.title = title ? `${title} · ${name}` : name;
 }
 
 // ------------------------------------------------------------ conversations
@@ -393,8 +341,7 @@ function setTitle(title) {
 function fmtDate(ts) {
   if (!ts) return "—";
   const d = new Date(ts * 1000);
-  const today = new Date();
-  return d.toDateString() === today.toDateString()
+  return d.toDateString() === new Date().toDateString()
     ? d.toLocaleTimeString(lang, { hour: "2-digit", minute: "2-digit" })
     : d.toLocaleDateString(lang, { day: "numeric", month: "short" });
 }
@@ -411,7 +358,6 @@ async function loadConversations() {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids }),
     });
     const convs = await resp.json();
-    // The ones that no longer exist on the server (deleted or expired) are forgotten
     const alive = new Set(convs.map((c) => c.id));
     store.set("rag.conversations", ids.filter((id) => alive.has(id)));
     if (!convs.length) { emptyList("noConversations"); return; }
@@ -460,10 +406,9 @@ async function openConversation(id) {
     for (const m of conv.messages) {
       const wrap = addMessage(m.role, m.content);
       if (m.role === "assistant") {
-        if (m.error) wrap.querySelector(".bubble").insertAdjacentHTML("beforeend", `<p class="error">${escapeHtml(tr("incomplete", { error: m.error }))}</p>`);
+        if (m.error) wrap.querySelector(".bubble").insertAdjacentHTML("beforeend", `<p class="error">${escapeHtml(tr("incomplete"))}</p>`);
         renderSources(wrap, m.sources);
-        renderMeta(wrap, m.provider, m.model, m.content,
-          m.error ? null : { messageId: m.id, rating: m.rating, reason: m.reason, comment: m.comment });
+        renderMeta(wrap, m.content, m.error ? null : { messageId: m.id, rating: m.rating, reason: m.reason, comment: m.comment });
       }
     }
     if (!conv.messages.length) showEmpty();
@@ -503,14 +448,13 @@ async function ask(question) {
   bubble.classList.add("typing");
   let answer = "";
   let sources = [];
-  let meta = null;
   let messageId = null;
 
   try {
     const resp = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, conversation_id: currentId, provider: providerSel.value || null }),
+      body: JSON.stringify({ question, conversation_id: currentId, context: currentContext() }),
       signal: controller.signal,
     });
     if (!resp.ok) throw new Error((await resp.json()).detail || resp.statusText);
@@ -531,7 +475,6 @@ async function ask(question) {
         if (!event || dataLine === undefined) continue;
         const data = JSON.parse(dataLine);
         if (event === "meta") {
-          meta = data;
           if (data.conversation_id && data.conversation_id !== currentId) {
             currentId = data.conversation_id;
             rememberId(currentId);
@@ -548,12 +491,12 @@ async function ask(question) {
       }
     }
   } catch (err) {
-    const msg = err.name === "AbortError" ? tr("stopped") : tr("error", { msg: err.message });
+    const msg = err.name === "AbortError" ? tr("stopped") : err.message;
     bubble.insertAdjacentHTML("beforeend", `<p class="error">${escapeHtml(msg)}</p>`);
   } finally {
     bubble.classList.remove("typing");
     renderSources(wrap, sources);
-    renderMeta(wrap, meta && meta.provider, meta && meta.model, answer, messageId ? { messageId } : null);
+    renderMeta(wrap, answer, messageId ? { messageId } : null);
     scrollDown();
     controller = null;
     setBusy(false);
@@ -584,152 +527,12 @@ input.addEventListener("input", () => {
   input.style.height = Math.min(input.scrollHeight, window.innerHeight * 0.4) + "px";
 });
 
-// ------------------------------------------------------------ status, provider and indexing
-
-function renderSpend(st) {
-  const el = $("#spend");
-  if (!st.spend || providerSel.value !== "anthropic") { el.innerHTML = ""; return; }
-  const s = st.spend;
-  const pct = s.cap_usd ? Math.min(100, (s.month_usd / s.cap_usd) * 100) : 0;
-  const cache = s.cache_hit_ratio != null ? ` · ${tr("cache", { pct: Math.round(s.cache_hit_ratio * 100) })}` : "";
-  el.innerHTML = (st.dry_run ? `<span class="muted">${escapeHtml(tr("dryRun"))}</span><br>` : "") +
-    escapeHtml(tr("spendMonth", { spent: s.month_usd.toFixed(2), cap: s.cap_usd.toFixed(2) })) + cache +
-    `<div class="meter${pct > 80 ? " high" : ""}" role="img" aria-label="${escapeHtml(tr("budgetUsed", { pct: Math.round(pct) }))}"><span style="width:${pct}%"></span></div>`;
-}
-
-function fillProviders(st) {
-  models = st.models;
-  const saved = store.get("rag.provider", null);
-  const wanted = st.providers.includes(saved) ? saved : st.default_provider;
-  providerSel.replaceChildren();
-  for (const p of st.providers) {
-    const opt = document.createElement("option");
-    opt.value = p;
-    opt.textContent = tr(`p_${p}`);
-    opt.selected = p === wanted;
-    providerSel.appendChild(opt);
-  }
-  if (!st.providers.length) providerSel.innerHTML = `<option value="">${escapeHtml(tr("noProviders"))}</option>`;
-  updateModel();
-}
-
-function renderIndexStatus(st) {
-  const parts = [`<p class="muted">${escapeHtml(tr("chunks", { n: st.chunks_in_index }))} · ${escapeHtml(st.embed_model)}</p>`];
-  const confluenceOn = st.confluence && st.confluence.configured;
-  document.querySelector('button[data-source="confluence"]').hidden = !confluenceOn;
-  for (const key of confluenceOn ? ["folder", "confluence"] : ["folder"]) {
-    const s = st.sources[key];
-    const run = s && s.last_sync;
-    const cls = run ? (run.status === "running" || run.status === "waiting" ? "running" : run.status === "ok" ? "ok" : "error") : "running";
-    const docs = s && Object.keys(s.docs).length
-      ? Object.entries(s.docs).map(([k, v]) => `${v} ${tr(`st_${k}`)}`).join(" · ") : tr("noDocs");
-    const extra = key === "folder"
-      ? (st.folder.auto ? "" : `<div class="muted">${escapeHtml(tr("autoOff"))}</div>`)
-      : `<div class="muted">${escapeHtml(st.confluence.spaces.join(", "))} · ` +
-        escapeHtml(st.confluence.sync_time ? tr("daily", { time: st.confluence.sync_time }) : tr("autoOff")) + "</div>";
-    const redacted = s && s.redactions ? `<div class="muted">${escapeHtml(tr("redacted", { n: s.redactions }))}</div>` : "";
-    const when = !run ? tr("pending")
-      : run.status === "running" ? tr("syncing")
-      : run.finished_at ? tr("last", { date: new Date(run.finished_at * 1000).toLocaleString(lang) }) : tr("pending");
-    const message = run && run.message && run.status !== "running" ? `<div class="muted">${escapeHtml(run.message)}</div>` : "";
-    parts.push(`<div class="source-card"><b><span class="dot ${cls}"></span>${tr(key)}</b>${escapeHtml(docs)}${extra}${redacted}` +
-      `<div class="muted">${escapeHtml(when)}</div>${message}</div>`);
-  }
-  $("#status").innerHTML = parts.join("");
-}
-
-async function loadStatus() {
-  if (document.hidden) return;
-  try {
-    const st = await (await fetch("/api/status")).json();
-    const firstLoad = !lastStatus;
-    lastStatus = st;
-    if (st.language && st.language !== lang) applyLanguage(st.language);
-    if (firstLoad) fillProviders(st);
-    renderSpend(st);
-    renderIndexStatus(st);
-    loadControl();
-  } catch {
-    $("#status").textContent = tr("statusFailed");
-  }
-}
-
-// ------------------------------------------------------------ source control review (no AI, no reindex)
-
-const CONTROL_SECTIONS = ["expired", "expiring", "changed", "review_due", "missing", "unreachable", "no_document", "unregistered"];
-const CONTROL_ALERTS = new Set(["expired", "missing", "changed"]);
-
-async function loadControl() {
-  const box = $("#control");
-  try {
-    const c = await (await fetch("/api/control?findings=60")).json();
-    $("#control-check").hidden = !c.configured;
-    if (!c.configured) { box.innerHTML = ""; return; }
-    const run = c.last_run;
-    const counts = (run && run.counts) || {};
-    const alert = CONTROL_SECTIONS.some((s) => CONTROL_ALERTS.has(s) && counts[s]);
-    const cls = c.running || (run && run.status === "running") ? "running" : !run || run.status === "error" || alert ? "error" : "ok";
-    const summary = CONTROL_SECTIONS.filter((s) => counts[s])
-      .map((s) => `${counts[s]} ${tr(`sec_${s}`)}`).join(" · ") || (run ? tr("ctlNothing") : "");
-    const when = c.running ? tr("ctlRunning")
-      : !run ? tr("ctlNever")
-      : run.status === "error" ? tr("ctlError", { error: run.error || "" })
-      : tr("ctlLast", { date: new Date((run.finished_at || run.started_at) * 1000).toLocaleString(lang) }) + (run.online ? "" : tr("ctlOffline"));
-    const schedule = c.check_time ? tr("daily", { time: c.check_time }) : tr("autoOff");
-    const items = (run && run.findings || []).map((f) =>
-      `<li><b>${escapeHtml(tr(`sec_${f.section}`))}</b> ${escapeHtml(f.file || f.jurisdiction || "")}` +
-      `${f.date ? ` (${escapeHtml(f.date)})` : ""}${f.hint ? `<div class="muted">${escapeHtml(f.hint)}</div>` : ""}</li>`).join("");
-    const more = run && run.total_findings > (run.findings || []).length
-      ? `<p class="muted">${escapeHtml(tr("ctlMore", { n: run.total_findings - run.findings.length }))}</p>` : "";
-    box.innerHTML = `<div class="source-card"><b><span class="dot ${cls}"></span>${escapeHtml(tr("ctlTitle"))}</b>` +
-      `${escapeHtml(tr("ctlRecords", { records: c.records, n: c.registries.length }))}` +
-      `<div class="muted">${escapeHtml(when)} · ${escapeHtml(schedule)}</div>` +
-      (summary ? `<div>${escapeHtml(summary)}</div>` : "") +
-      (items ? `<details class="findings"><summary>${escapeHtml(tr("ctlDetails"))}</summary><ul>${items}</ul>${more}</details>` : "") +
-      "</div>";
-  } catch {
-    box.innerHTML = "";
-  }
-}
-
-$("#control-check").addEventListener("click", async () => {
-  const resp = await fetch("/api/control/check", {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ online: true }),
-  });
-  const data = await resp.json();
-  $("#reindex-msg").textContent = resp.ok ? (data.started ? tr("ctlStarted") : tr("ctlRunning")) : data.detail;
-  setTimeout(loadControl, 1500);
-});
-
-function updateModel() {
-  $("#model").textContent = models[providerSel.value] ? tr("model", { model: models[providerSel.value] }) : "";
-  if (lastStatus) renderSpend(lastStatus);
-}
-providerSel.addEventListener("change", () => {
-  store.set("rag.provider", providerSel.value);
-  updateModel();
-});
-
-document.querySelectorAll("button[data-source]").forEach((btn) =>
-  btn.addEventListener("click", async () => {
-    const resp = await fetch("/api/reindex", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ source: btn.dataset.source }),
-    });
-    const data = await resp.json();
-    $("#reindex-msg").textContent = resp.ok ? tr("started", { list: data.started.join(", ") }) : data.detail;
-    setTimeout(loadStatus, 1500);
-  })
-);
-
 // ------------------------------------------------------------ startup
 
 applyLanguage(lang);
-loadStatus();
-setInterval(loadStatus, 15000);
-document.addEventListener("visibilitychange", loadStatus);
-const lastOpen = store.get("rag.current", null);
-if (lastOpen) openConversation(lastOpen);
-else { showEmpty(); loadConversations(); }
+loadBranding().then(() => {
+  const lastOpen = store.get("rag.current", null);
+  if (lastOpen) openConversation(lastOpen);
+  else { showEmpty(); loadConversations(); }
+});
 if (!touch.matches) input.focus();

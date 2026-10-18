@@ -107,14 +107,23 @@ class FakeStream:
 
 
 class FakeClient:
-    def __init__(self):
+    def __init__(self, reply='{"corrected": "q", "standalone": "q", "queries": [], "missing": []}',
+                 stop_reason="end_turn"):
         self.calls = []
-        self.messages = SimpleNamespace(stream=lambda **kw: FakeStream(self.calls, kw))
+
+        async def create(**kw):
+            self.calls.append(kw)
+            return SimpleNamespace(model=kw["model"], stop_reason=stop_reason,
+                                   usage=SimpleNamespace(iterations=None, input_tokens=10, output_tokens=5,
+                                                         cache_read_input_tokens=0),
+                                   content=[SimpleNamespace(type="text", text=reply)])
+
+        self.messages = SimpleNamespace(stream=lambda **kw: FakeStream(self.calls, kw), create=create)
         self.beta = SimpleNamespace(messages=SimpleNamespace(stream=lambda **kw: FakeStream(self.calls, kw)))
 
 
-def make_claude(spend=None):
-    client = FakeClient()
+def make_claude(spend=None, **client_kwargs):
+    client = FakeClient(**client_kwargs)
     llm = AnthropicLLM(Settings(_env_file=None, anthropic_api_key="x"), spend or FakeSpend(), client=client)
     return llm, client
 
@@ -133,13 +142,22 @@ def test_answer_uses_fallbacks_and_records_spend():
     assert llm.spend.records == [("claude-opus-5-5", "answer")]
 
 
-def test_rewrite_uses_fast_model_without_fallbacks():
+def test_search_preparation_uses_fast_model_with_json_schema():
     llm, client = make_claude()
-    assert asyncio.run(llm.complete("sys", [{"role": "user", "content": "x"}])) == "ok"
+    schema = {"type": "object"}
+    data = asyncio.run(llm.complete_json("sys", [{"role": "user", "content": "x"}], schema))
+    assert data == {"corrected": "q", "standalone": "q", "queries": [], "missing": []}
     call = client.calls[0]
     assert call["model"] == "claude-haiku-5-5"
     assert "fallbacks" not in call
-    assert call["output_config"] == {"effort": "low"}
+    assert call["output_config"] == {"effort": "low", "format": {"type": "json_schema", "schema": schema}}
+    assert llm.spend.records == [("claude-haiku-5-5", "prepare")]
+
+
+def test_unusable_preparation_returns_empty():
+    for kwargs in ({"reply": "not json"}, {"stop_reason": "refusal"}, {"stop_reason": "max_tokens"}):
+        llm, _ = make_claude(**kwargs)
+        assert asyncio.run(llm.complete_json("sys", [{"role": "user", "content": "x"}], {})) == {}
 
 
 def test_budget_exhausted_blocks_the_call():
