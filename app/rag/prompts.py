@@ -309,7 +309,7 @@ def rerank_prompt(language: str) -> str:
 
 
 def build_rerank_message(language: str, question: str, standalone: str, context: list[dict] | None,
-                         excerpts: list[tuple[str, str, str]], max_chars: int = 2500) -> str:
+                         excerpts: list[tuple[str, str, str]], max_chars: int = 6000) -> str:
     """`excerpts`: (title and section, search note, text) of every candidate, numbered from 1."""
     lb = _RERANK_LABELS[normalize(language)]
     lines = [f"{lb['question']}: {question}"]
