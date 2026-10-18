@@ -84,14 +84,7 @@ class Services:
 
     def context_fields(self, brand: dict) -> list[dict]:
         """The collection's selectors with their options (fixed, or the indexed values of their field)."""
-        out = []
-        for f in brand.get("context_fields", []):
-            options = f["options"] or self.field_values(f["field"])
-            excluded = {x.casefold() for x in f["exclude_options"]}
-            options = [o for o in options if o.casefold() not in excluded]
-            if options:
-                out.append({**f, "options": options})
-        return out
+        return branding.with_options(brand.get("context_fields", []), self.field_values)
 
     def _contextualizer(self):
         if not settings.contextual_indexing:
@@ -302,13 +295,7 @@ def user_context(sent: dict[str, str]) -> list[dict]:
     if not sent:
         return []
     brand = branding.load(settings.docs_path, settings.control_dir, settings.language)
-    out = []
-    for f in services.context_fields(brand):
-        value = (sent.get(f["id"]) or "").strip()
-        if value and value in f["options"]:
-            out.append({"id": f["id"], "label": f["label"], "value": value,
-                        "field": f["field"] if f["boost"] else None})
-    return out
+    return branding.resolve_context(services.context_fields(brand), sent)
 
 
 @app.get("/api/branding/icon")

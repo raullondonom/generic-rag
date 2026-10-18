@@ -130,6 +130,30 @@ def context_fields(value, index_fields: tuple[str, ...] = ()) -> list[dict]:
     return fields[:MAX_FIELDS]
 
 
+def with_options(fields: list[dict], field_values) -> list[dict]:
+    """The selectors with their options: fixed, or `field_values(field)` (the indexed values)."""
+    out = []
+    for f in fields:
+        options = f["options"] or field_values(f["field"])
+        excluded = {x.casefold() for x in f["exclude_options"]}
+        options = [o for o in options if o.casefold() not in excluded]
+        if options:
+            out.append({**f, "options": options})
+    return out
+
+
+def resolve_context(fields: list[dict], sent: dict[str, str]) -> list[dict]:
+    """The user's choices as context for the search and the answer. Only values the selectors offer
+    are accepted (the rest is ignored); `field` is set when the value prioritizes the search."""
+    out = []
+    for f in fields:
+        value = (sent.get(f["id"]) or "").strip()
+        if value and value in f["options"]:
+            out.append({"id": f["id"], "label": f["label"], "value": value,
+                        "field": f["field"] if f["boost"] else None})
+    return out
+
+
 def icon_path(docs_path: str, control_dir: str) -> Path | None:
     """The collection's icon file (ui.json "icon", inside the control folder), if any."""
     folder = ControlFolder.load(docs_path, control_dir)

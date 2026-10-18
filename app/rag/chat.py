@@ -184,6 +184,15 @@ class ChatService:
         """What leaves the machine (Claude) is redacted; documents were already redacted when indexed."""
         return self.redactor(text).text if llm.remote and self.redactor.enabled else text
 
+    async def search(self, llm: LLM, question: str, history: list[dict], context: list[dict]
+                     ) -> tuple[Prepared, list[str], list[Hit]]:
+        """Preparation and retrieval of a question (also used by the retrieval evaluation)."""
+        prepared = await self.prepare(llm, question, history, context)
+        queries = prepared.search_queries(self.settings.search_queries_max)
+        boosts = [{c["field"]: c["value"]} for c in context if c.get("field")]
+        prepared.keywords = await self.specific_keywords(prepared.keywords)
+        return prepared, queries, await self.retrieve(queries, boosts, prepared.keywords)
+
     async def answer(self, question: str, conversation_id: str | None, provider: str | None,
                      context: list[dict] | None = None) -> AsyncIterator[tuple[str, object]]:
         """Yields (kind, data) events: meta, sources, token, done. Saves the question and the answer.
@@ -215,11 +224,8 @@ class ChatService:
         safe_question = self._clean(llm, question)
         safe_history = [{**m, "content": self._clean(llm, m["content"])} for m in history]
         context = context or []
-        prepared = await self.prepare(llm, safe_question, safe_history, context)
-        queries = prepared.search_queries(self.settings.search_queries_max)
-        boosts = [{c["field"]: c["value"]} for c in context if c.get("field")]
-        prepared.keywords = await self.specific_keywords(prepared.keywords)
-        docs = group_hits(await self.retrieve(queries, boosts, prepared.keywords), self.language)
+        prepared, queries, hits = await self.search(llm, safe_question, safe_history, context)
+        docs = group_hits(hits, self.language)
         sources = [{k: d[k] for k in SOURCE_FIELDS} for d in docs]
         yield "sources", sources
 
