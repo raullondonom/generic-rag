@@ -34,6 +34,11 @@ CREATE TABLE IF NOT EXISTS sync_runs (
 );
 
 -- Loose values, e.g. the Qdrant collection the current state was indexed into
+CREATE TABLE IF NOT EXISTS chunk_context (
+    key         TEXT PRIMARY KEY,       -- hash of the prompt, the model, the document data and the chunk
+    note        TEXT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL

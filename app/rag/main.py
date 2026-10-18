@@ -29,6 +29,7 @@ from .embeddings import Embedder
 from .feedback import REASONS, FeedbackError, FeedbackStore
 from .i18n import normalize, t
 from .ingest.confluence_source import ConfluenceSource
+from .ingest.contextual import Contextualizer
 from .ingest.folder_source import FolderSource
 from .ingest.pipeline import Indexer
 from .ingest.state import StateStore
@@ -54,10 +55,11 @@ class Services:
         self.state = StateStore(self.db)
         self.embedder = Embedder(settings)
         self.store = VectorStore(settings)
-        self.indexer = Indexer(settings, self.embedder, self.store, self.state)
+        self.spend = SpendTracker(self.db, settings.monthly_budget_usd, settings.tz, language=settings.language)
+        self.indexer = Indexer(settings, self.embedder, self.store, self.state,
+                               contextualizer=self._contextualizer())
         self.folder = FolderSource(settings, self.indexer)
         self.confluence = ConfluenceSource(settings, self.indexer)
-        self.spend = SpendTracker(self.db, settings.monthly_budget_usd, settings.tz, language=settings.language)
         self.conversations = ConversationStore(self.db)
         self.feedback = FeedbackStore(self.db)
         self.control = ControlStore(self.db)
@@ -90,6 +92,15 @@ class Services:
             if options:
                 out.append({**f, "options": options})
         return out
+
+    def _contextualizer(self):
+        if not settings.contextual_indexing:
+            return None
+        if settings.dry_run or not settings.anthropic_api_key:
+            log.warning("CONTEXTUAL_INDEXING needs a Claude API key (and DRY_RUN=false): indexing without notes")
+            return None
+        return Contextualizer(settings, self.db, self.spend, describe=self.describe_collection,
+                              guidance=self.search_notes)
 
     def set_default_provider(self, provider: str | None) -> None:
         """Provider picked in the admin panel; it survives restarts. None = back to LLM_PROVIDER."""

@@ -18,11 +18,15 @@ log = logging.getLogger(__name__)
 TEXT_LANGUAGES = {"en": "english", "es": "spanish"}
 
 
-def text_condition(text: str) -> qm.FieldCondition:
-    """A keyword of several words must appear as that phrase; a single word, in any form (stemmed)."""
+TEXT_FIELDS = ("text", "search_note")  # the chunk and its search note (contextual indexing)
+
+
+def text_condition(text: str) -> qm.Filter:
+    """A keyword of several words must appear as that phrase; a single word, in any form (stemmed).
+    It may appear in the chunk or in its search note."""
     text = text.strip()
     match = qm.MatchPhrase(phrase=text) if len(text.split()) > 1 else qm.MatchText(text=text)
-    return qm.FieldCondition(key="text", match=match)
+    return qm.Filter(should=[qm.FieldCondition(key=field, match=match) for field in TEXT_FIELDS])
 
 
 @dataclass
@@ -121,12 +125,14 @@ class VectorStore:
             min_token_len=2, max_token_len=40, stopwords=qm.Language(lang), phrase_matching=True,
             stemmer=qm.SnowballParams(type=qm.Snowball.SNOWBALL, language=qm.SnowballLanguage(lang)),
         )
-        current = self.client.get_collection(self.collection).payload_schema.get("text")
-        if current is not None and current.params is not None:
-            if current.params.model_dump(exclude_none=True) == params.model_dump(exclude_none=True):
-                return
-            self.client.delete_payload_index(self.collection, "text", wait=True)  # settings changed
-        self.client.create_payload_index(self.collection, "text", field_schema=params, wait=False)
+        schema = self.client.get_collection(self.collection).payload_schema
+        for field in TEXT_FIELDS:
+            current = schema.get(field)
+            if current is not None and current.params is not None:
+                if current.params.model_dump(exclude_none=True) == params.model_dump(exclude_none=True):
+                    continue
+                self.client.delete_payload_index(self.collection, field, wait=True)  # settings changed
+            self.client.create_payload_index(self.collection, field, field_schema=params, wait=False)
 
     def ensure_keyword_index(self, field: str) -> None:
         """Payload index needed to list a field's values and filter by it (idempotent)."""

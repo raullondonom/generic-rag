@@ -73,6 +73,12 @@ class Settings(BaseSettings):
     min_score: float = 0.45
     score_margin: float = 0.12
     chunk_size: int = 3000
+    # Contextual retrieval: a fast Claude model writes a search note per chunk while indexing (cached
+    # in Postgres; counts against MONTHLY_BUDGET_USD). Changing it, or the collection's search notes,
+    # indexes everything again.
+    contextual_indexing: bool = False
+    context_model: str = ""  # empty = ANTHROPIC_FAST_MODEL
+    context_workers: int = 8
     chunk_overlap: int = 400
     history_turns: int = 6
 

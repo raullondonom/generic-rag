@@ -206,3 +206,53 @@ def build_prepare_message(convo: str, question: str, language: str, context=None
     lb = labels(language)
     msg = f"{lb['conversation']}:\n{convo}\n\n{lb['last']}: {question}" if convo else f"{lb['last']}: {question}"
     return f"{msg}\n{lb['context']}: {format_user_context(context)}" if context else msg
+
+
+# Indexing: a search note per chunk (contextual retrieval, see ingest/contextual.py)
+CONTEXT_PROMPTS = {
+    "en": """You write a search note for a chunk of a document of this collection: {collection}
+
+The note is indexed with the chunk so that searches find it; nobody reads it as an answer. Write 1 to 3 \
+sentences, at most 70 words, in English:
+- what the chunk establishes or explains: the rule, obligation, prohibition, sanction, procedure, deadline or \
+definition, with its article, code or number when the chunk shows it;
+- the everyday words and the official terms someone would use to look for it;
+- only what the chunk and the document data say: add no facts, opinions or advice.
+If the chunk mixes several subjects, name the main ones. Write only the note, without an introduction.""",
+    "es": """Escribes una nota de búsqueda para un fragmento de un documento de esta colección: {collection}
+
+La nota se indexa con el fragmento para que las búsquedas lo encuentren; nadie la lee como respuesta. Escribe \
+de 1 a 3 frases, máximo 70 palabras, en español:
+- qué establece o explica el fragmento: la regla, obligación, prohibición, sanción, procedimiento, plazo o \
+definición, con su artículo, código o número cuando el fragmento lo muestra;
+- las palabras cotidianas y los términos oficiales que alguien usaría para buscarlo;
+- solo lo que dicen el fragmento y los datos del documento: no agregues datos, opiniones ni consejos.
+Si el fragmento mezcla varios temas, nombra los principales. Escribe solo la nota, sin introducción.""",
+}
+
+_CONTEXT_LABELS = {
+    "en": {"guidance": "What the users of this collection look for", "document": "Document",
+           "section": "Section", "previous": "End of the previous chunk", "chunk": "Chunk"},
+    "es": {"guidance": "Qué buscan los usuarios de esta colección", "document": "Documento",
+           "section": "Sección", "previous": "Final del fragmento anterior", "chunk": "Fragmento"},
+}
+
+
+def context_prompt(language: str, collection: str, guidance: str = "") -> str:
+    lang = normalize(language)
+    prompt = CONTEXT_PROMPTS[lang].format(collection=collection or "-")
+    return f"{prompt}\n\n{_CONTEXT_LABELS[lang]['guidance']}:\n{guidance}" if guidance else prompt
+
+
+def build_context_message(language: str, title: str, context: str, section: str, previous: str,
+                          piece: str) -> str:
+    lb = _CONTEXT_LABELS[normalize(language)]
+    lines = [f"{lb['document']}: {title}"]
+    if context.strip():
+        lines.append(context.strip())
+    if section:
+        lines.append(f"{lb['section']}: {section}")
+    if previous:
+        lines.append(f"\n{lb['previous']}: …{previous}")
+    lines.append(f"\n{lb['chunk']}:\n{piece}")
+    return "\n".join(lines)

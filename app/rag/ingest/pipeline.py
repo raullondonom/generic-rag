@@ -10,6 +10,7 @@ from ..i18n import t
 from ..redaction import Redactor
 from ..vectorstore import VectorStore
 from .chunker import chunk_text
+from .contextual import PREVIOUS_CHARS, strip_mark
 from .loaders import Section
 from .state import StateStore
 
@@ -18,8 +19,10 @@ log = logging.getLogger(__name__)
 
 class Indexer:
     def __init__(self, settings: Settings, embedder: Embedder, store: VectorStore, state: StateStore,
-                 redactor: Redactor | None = None):
+                 redactor: Redactor | None = None, contextualizer=None):
+        """`contextualizer`: writes a search note per chunk (CONTEXTUAL_INDEXING), or None."""
         self.settings = settings
+        self.contextualizer = contextualizer
         self.embedder = embedder
         self.store = store
         self.state = state
@@ -36,6 +39,7 @@ class Indexer:
         """`context`: lines added under the title of every chunk; `extra`: additional payload fields."""
         chunks: list[str] = []
         payloads: list[dict] = []
+        items: list[tuple[str, str, str]] = []  # (section, end of the previous chunk, chunk) for the notes
         redactions = 0
         context_text = "".join(f"\n{line}" for line in context or [])
         for section in sections:
@@ -43,9 +47,12 @@ class Indexer:
             result = self.redactor(section.text)
             redactions += result.total
             header = title + (f" ({section.location})" if section.location else "") + context_text
+            previous = ""
             for piece in chunk_text(result.text, self.settings.chunk_size, self.settings.chunk_overlap):
                 # Title and context go inside the chunk: better search and context for the AI
                 chunks.append(f"{header}\n\n{piece}")
+                items.append((section.location or "", previous[-PREVIOUS_CHARS:], piece))
+                previous = piece
                 payloads.append({
                     **(extra or {}),
                     "source": source,
@@ -62,7 +69,17 @@ class Indexer:
                               status="empty", container=container, error=t(self.settings.language, "no_text"))
             return 0
 
-        vectors = self.embedder.embed_documents(chunks)
+        to_embed = chunks
+        if self.contextualizer is not None:
+            notes = self.contextualizer.notes(title, context_text, items)
+            for payload, note in zip(payloads, notes):
+                if note:
+                    payload["search_note"] = note
+            # The note is embedded (and full-text indexed) with the chunk; the AI reads the chunk only
+            to_embed = [f"{note}\n\n{chunk}" if note else chunk for chunk, note in zip(chunks, notes)]
+            if not all(notes):
+                version = strip_mark(version)  # retried on the next sync (the notes written are cached)
+        vectors = self.embedder.embed_documents(to_embed)
         self.store.upsert(doc_id, chunks, vectors, payloads)
         self.state.upsert(doc_id, source=source, title=title, location=location, version=version,
                           status="indexed", chunks=len(chunks), redactions=redactions, container=container)

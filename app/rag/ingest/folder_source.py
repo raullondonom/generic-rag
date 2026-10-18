@@ -153,6 +153,9 @@ class FolderSource:
                 version += "+ocr2:" + self._version(ocr_text, rel + sidecar)[:16]
             if info:
                 version += ":" + metadata_version(info)  # a registry edit reindexes this document only
+            contextualizer = getattr(self.indexer, "contextualizer", None)
+            if contextualizer is not None:
+                version += contextualizer.mark()  # notes enabled or changed: indexed again
             if not full and self.indexer.is_current(doc_id, version):
                 return 0
             context = context_lines(rel, info, self.lang)

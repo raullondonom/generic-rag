@@ -31,6 +31,7 @@ TEXTS: dict[str, dict[str, str]] = {
         ),
         "purpose_answer": "the answer",
         "purpose_rewrite": "preparing the search",
+        "purpose_context": "the search notes of the chunks",
         # Source labels and locations inside files
         "local_folder": "Local folder",
         "page": "page {n}",
@@ -90,6 +91,7 @@ TEXTS: dict[str, dict[str, str]] = {
         ),
         "purpose_answer": "la respuesta",
         "purpose_rewrite": "preparar la búsqueda",
+        "purpose_context": "las notas de búsqueda de los fragmentos",
         "local_folder": "Carpeta local",
         "page": "página {n}",
         "sheet": "hoja {name}",
