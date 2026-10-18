@@ -141,11 +141,12 @@ def repo_url():
     return re.sub(r"\.git$", "", url)
 
 
-def build_section(version, commits, baseline, signals=()):
+def build_section(version, commits, baseline, signals=(), notes_file=None):
     today = datetime.date.today().isoformat()
     lines = [f"## [{fmt(version)}] - {today}", ""]
     if baseline:
-        return "\n".join(lines + ["### Added", "", "- Initial release. <describe what the project does today>", ""])
+        notes = Path(notes_file).read_text().strip() if notes_file else "- Initial release. <describe what the project does today>"
+        return "\n".join(lines + ["### Added", "", notes, ""])
     buckets = {s: [] for s in SECTIONS}
     for c in commits:
         if c["type"] in SILENT_TYPES and not c["breaking"]:
@@ -206,7 +207,7 @@ def cmd_release(args):
     new_tag = f"v{fmt(version)}"
     if git("tag", "--list", new_tag):
         sys.exit(f"Tag {new_tag} already exists. Published tags are never reused.")
-    section = build_section(version, commits, bool(args.baseline), breaking_signals(tag))
+    section = build_section(version, commits, bool(args.baseline), breaking_signals(tag), args.notes_file)
     print(section)
     if args.dry_run:
         print(f"[dry-run] would write VERSION={fmt(version)}, update CHANGELOG.md, commit and tag {new_tag}")
@@ -227,6 +228,7 @@ def main():
     rel.add_argument("level", choices=["major", "minor", "patch"])
     rel.add_argument("--dry-run", action="store_true")
     rel.add_argument("--baseline", help="first release version X.Y.Z (repository without tags)")
+    rel.add_argument("--notes-file", help="markdown bullet list used as the 'Added' summary of the baseline release")
     rel.set_defaults(func=cmd_release)
     args = parser.parse_args()
     args.func(args)

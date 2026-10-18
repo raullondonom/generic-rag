@@ -65,7 +65,7 @@ Precondition: `analyze` confirmed by the user; on `main`; tests pass (`docker co
 
 ## First release (repository without tags)
 
-The history before this skill is not in Conventional Commits. For the first release do not auto-generate the changelog from 28+ old commits: ask the user for the baseline version (suggested `0.1.0`, or `1.0.0` if the API is considered stable), write a short manual `## [X.Y.Z]` summary of what the project does today, and tag the current `main`. From then on `analyze` and `release` are incremental. `semver.py release` supports this with `--baseline X.Y.Z`.
+The history before this skill is not in Conventional Commits. For the first release do not auto-generate the changelog from 28+ old commits: ask the user for the baseline version (suggested `0.1.0`, or `1.0.0` if the API is considered stable), write a short manual `## [X.Y.Z]` summary of what the project does today, and tag the current `main`. From then on `analyze` and `release` are incremental. `semver.py release major --baseline X.Y.Z --notes-file <file.md>` supports this: the file holds the bullet list used as the `Added` section (without `--notes-file` a placeholder is written, which must be replaced before publishing).
 
 ## Commit message format (required for this to work)
 
