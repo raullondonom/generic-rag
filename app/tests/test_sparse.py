@@ -3,11 +3,11 @@ from rag.vectorstore import Hit
 
 
 def test_terms_are_folded_stemmed_and_keep_codes():
-    terms = sparse.terms("Infracción C.11: no portar el equipo; técnico-mecánica vencida", "es")
-    assert "c.11" in terms and "11" in terms
-    assert "tecnico-mecanica" in terms
-    assert "el" not in terms and "no" not in terms  # stopwords
-    assert sparse.terms("Infracciones", "es")[0] == sparse.terms("infracción", "es")[0]  # same stem
+    terms = sparse.terms("Artículo R.12: el formulario de reembolso; período anual-mensual", "es")
+    assert "r.12" in terms and "12" in terms
+    assert "anual-mensual" in terms  # the compound whole, besides its stemmed parts
+    assert "el" not in terms and "de" not in terms  # stopwords
+    assert sparse.terms("Reembolsos", "es")[0] == sparse.terms("reembolso", "es")[0]  # same stem
 
 
 def test_bm25_weights_saturate_and_ids_are_stable():
