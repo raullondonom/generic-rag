@@ -67,14 +67,17 @@ Notes:
 git clone https://github.com/raullondonom/generic-rag.git
 cd generic-rag
 cp .env.example .env            # on Windows (PowerShell): copy .env.example .env
+cp -r examples/documents/. documents/   # optional sample; on Windows: Copy-Item examples\documents\* documents -Recurse
 docker compose up -d --build
 docker compose logs -f ollama-init   # the first start downloads the models; wait until it finishes
 ```
 
+`documents/` holds your own content and is never versioned: git ignores everything in it. The sample (a user guide and a source control folder) lives in `examples/documents/`.
+
 1. Open <http://localhost:8000> (on a phone, use your computer's IP or the ngrok tunnel).
-2. Ask about the sample document (`documents/example-user-guide.md`), for example *"How do I add new documents?"*. The answer must cite source `[1]`.
+2. Ask about the sample document (`example-user-guide.md`), for example *"How do I add new documents?"*. The answer must cite source `[1]`.
 3. Check the rules with an unrelated question, like *"Who won the 2022 World Cup?"*. It must say it has no such information and ask for more details.
-4. Copy your own files into `documents/`: they are indexed by themselves in under a minute.
+4. Copy your own files into `documents/` (or point `DOCS_HOST_PATH` to any folder): they are indexed by themselves in under a minute.
 
 Optional:
 
@@ -171,7 +174,7 @@ Any folder layout works, but these conventions make retrieval and maintenance be
 
 - **Topic folders in English, numbered**, and names without accents or spaces, e.g. `01_national_laws/`, `05_local_regulations/<department>/<municipality>/`. The relative folder path goes into the context of every chunk, so similar documents of different places (one decree per city, for example) are told apart.
 - **The `_` prefix is reserved for what must not be indexed**: the control folder, archived versions (`_archive/`), history. Every file or folder starting with `IGNORE_PREFIXES` (`.`, `_`, `~$` by default) is skipped, so content folders must not start with `_`.
-- **A control folder** (`_control/`, see [documents/_control](documents/_control)) records where every document came from:
+- **A control folder** (`_control/`, see the sample in [examples/documents/_control](examples/documents/_control)) records where every document came from:
 
 | File | Content |
 |---|---|
