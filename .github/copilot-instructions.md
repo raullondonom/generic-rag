@@ -19,7 +19,7 @@ Type `/graphify` in Copilot Chat to build or update the graph.
 ## Git workflow and versioning
 
 - `main` is the only long-lived branch and stays stable. Never commit on `main`: every change starts in a
-  `<type>/<name>` branch (e.g. `feature/hybrid-search`). Merges are local fast-forwards, no pull requests for now.
+  `<type>/<name>` branch (e.g. `feature/hybrid-search`). Before any merge into `main`, sync it with `origin/main` (fetch + fast-forward/rebase); merges are local fast-forwards, no pull requests for now.
   Details: skill `git-flow-trunk`.
 - Commit messages follow Conventional Commits (`feat:`, `fix:`, `feat!:` ...). Releases (SemVer, `CHANGELOG.md`,
   `VERSION`, tag `vX.Y.Z`) are cut from `main` with skill `semantic-versioning`.

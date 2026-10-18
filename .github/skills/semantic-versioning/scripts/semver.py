@@ -192,6 +192,10 @@ def cmd_release(args):
         sys.exit("Releases are cut from main only.")
     if git("status", "--porcelain"):
         sys.exit("Working tree is not clean: commit or stash first.")
+    if git("remote", "get-url", "origin", check=False):
+        git("fetch", "origin", "main", "--tags")
+        if git("rev-list", "--count", "main..origin/main") != "0":
+            sys.exit("main is behind origin/main: run `git rebase origin/main` (or --ff-only) before releasing.")
     tag = last_tag()
     commits = commits_since(tag)
     if args.baseline:
