@@ -84,3 +84,12 @@ def test_answer_message_shows_the_interpretation_only_when_it_adds_something():
     msg = build_user_message("levae", docs, "en", other)
     assert labels("en")["interpretation"] in msg
     assert "annual leave for new staff" in msg and "annual leave" in msg and "contract type" in msg
+
+
+def test_system_prompt_mentions_confluence_only_when_enabled():
+    from rag.prompts import system_prompt
+
+    for lang in ("en", "es"):
+        assert "Confluence" not in system_prompt(lang)
+        assert "Confluence" in system_prompt(lang, confluence=True)
+        assert "<" not in system_prompt(lang, confluence=True)

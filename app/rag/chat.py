@@ -172,7 +172,7 @@ class ChatService:
     def system(self) -> str:
         """System prompt plus the notes of the collection's administrator, if any (trusted operator text)."""
         notes = _optional(self.notes, "Could not read the assistant notes")
-        base = system_prompt(self.language)
+        base = system_prompt(self.language, self.settings.confluence_enabled)
         return f"{base}\n\n{t(self.language, 'corpus_notes')}\n{notes}" if notes else base
 
     def _clean(self, llm: LLM, text: str) -> str:
