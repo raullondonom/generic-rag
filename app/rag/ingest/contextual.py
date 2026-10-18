@@ -29,7 +29,7 @@ from ..prompts import build_context_message, context_prompt
 log = logging.getLogger(__name__)
 
 PROMPT_VERSION = "1"  # bump when the prompt changes: every note is written again
-MAX_TOKENS = 200
+MAX_TOKENS = 350  # the note asks for 70 words; room so it is not cut
 PREVIOUS_CHARS = 800  # end of the previous chunk, so a chunk that starts mid-list knows where it is
 CACHE = {"type": "ephemeral"}
 VERSION_MARK = "+ctx:"
