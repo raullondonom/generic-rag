@@ -1,0 +1,135 @@
+# Indexing, source review, retention and the administration API: exactly one instance.
+apiVersion: v1
+kind: Service
+metadata:
+  name: scheduler
+  labels:
+    app: scheduler
+spec:
+  selector:
+    app: scheduler
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scheduler
+spec:
+  replicas: 1
+  # Never two indexers at the same time (an update must stop the old pod first).
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: scheduler
+  template:
+    metadata:
+      labels:
+        app: scheduler
+    spec:
+      terminationGracePeriodSeconds: 75
+      initContainers:
+        - name: wait-for-postgres
+          image: genric-rag-app:local
+          command:
+            - python
+            - -c
+            - |
+              import socket, time
+              while True:
+                  try:
+                      socket.create_connection(("postgres", 5432), 2).close()
+                      break
+                  except OSError:
+                      print("waiting for postgres", flush=True)
+                      time.sleep(2)
+        - name: wait-for-qdrant
+          image: genric-rag-app:local
+          command:
+            - python
+            - -c
+            - |
+              import time, urllib.request
+              while True:
+                  try:
+                      urllib.request.urlopen("http://qdrant:6333/readyz", timeout=3).read()
+                      break
+                  except Exception:
+                      print("waiting for qdrant", flush=True)
+                      time.sleep(2)
+      containers:
+        - name: app
+          image: genric-rag-app:local
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: rag-config
+          env:
+            - name: ROLE
+              value: scheduler
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: rag-secrets
+                  key: POSTGRES_PASSWORD
+            - name: DATABASE_URL
+              value: "postgresql://rag:$(POSTGRES_PASSWORD)@postgres:5432/rag"
+            - name: ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: rag-secrets
+                  key: ADMIN_TOKEN
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: rag-secrets
+                  key: ANTHROPIC_API_KEY
+                  optional: true
+            - name: CONFLUENCE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: rag-secrets
+                  key: CONFLUENCE_TOKEN
+                  optional: true
+          ports:
+            - name: http
+              containerPort: 8000
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 3Gi
+          volumeMounts:
+            - name: documents
+              mountPath: /data/docs
+              readOnly: true
+      volumes:
+        - name: documents
+          persistentVolumeClaim:
+            claimName: documents
+            readOnly: true

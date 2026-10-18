@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rag-config
+data:
+  # A small model keeps the local (CPU) test usable.
+  OLLAMA_CHAT_MODEL: "qwen3:0.6b"
+  OLLAMA_NUM_CTX: "4096"
+  TOP_K: "5"
+  # No online source review in the local test.
+  CONTROL_CHECK_TIME: ""

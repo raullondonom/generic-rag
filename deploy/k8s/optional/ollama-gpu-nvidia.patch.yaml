@@ -1,0 +1,14 @@
+# Strategic merge patch: Ollama on an NVIDIA GPU.
+#   kubectl -n transit-chat patch deployment ollama --type=strategic \
+#     --patch-file deploy/k8s/optional/ollama-gpu-nvidia.patch.yaml
+# Requires the NVIDIA device plugin and the "nvidia" RuntimeClass.
+# For AMD/ROCm install the AMD GPU device plugin and use amd.com/gpu instead.
+spec:
+  template:
+    spec:
+      runtimeClassName: nvidia
+      containers:
+        - name: ollama
+          resources:
+            limits:
+              nvidia.com/gpu: "1"

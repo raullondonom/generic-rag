@@ -1,0 +1,69 @@
+# Non-secret configuration shared by every application role.
+# Secrets (POSTGRES_PASSWORD, ADMIN_TOKEN, ANTHROPIC_API_KEY, CONFLUENCE_TOKEN, HF_TOKEN)
+# live in the `rag-secrets` Secret, created by deploy/k8s/scripts/secrets.sh.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rag-config
+data:
+  # UI and corpus
+  LANGUAGE: "es"
+  LOG_LEVEL: "INFO"
+  TZ: "UTC"
+
+  # Local model. LLM_PROVIDER=auto uses Claude when ANTHROPIC_API_KEY is set, Ollama otherwise.
+  LLM_PROVIDER: "auto"
+  DRY_RUN: "false"
+  OLLAMA_URL: "http://ollama:11434"
+  OLLAMA_CHAT_MODEL: "qwen3:4b-instruct-2507-q4_K_M"
+  OLLAMA_THINK: "false"
+  OLLAMA_NUM_CTX: "12288"
+  OLLAMA_NUM_GPU: "-1"
+  OLLAMA_WITH_CLAUDE: "false"
+
+  # Embeddings (local, text-embeddings-inference)
+  EMBEDDING_URL: "http://embeddings:80"
+  EMBEDDING_MODEL: "Qwen/Qwen3-Embedding-0.6B"
+  EMBEDDING_BATCH: "32"
+
+  # Vector store
+  QDRANT_URL: "http://qdrant:6333"
+  QDRANT_REPLICATION_FACTOR: "1"
+  QDRANT_WRITE_CONSISTENCY: "1"
+  QDRANT_SHARDS: "1"
+
+  # State. The API pods answer directly; there is no Redis queue or cache in
+  # this deployment (the code enables them only when those URLs are set).
+  DB_POOL_MAX: "4"
+
+  # Documents
+  DOCS_PATH: "/data/docs"
+  FOLDER_SCAN_INTERVAL: "60"
+  CONTROL_DIR: "_control"
+  CONTROL_CHECK_TIME: "16:00"
+  CONTROL_CHECK_ONLINE: "true"
+  MAX_FILE_MB: "100"
+  IGNORE_PREFIXES: ".,_,~$"
+  EXCLUDE_STATUSES: "repealed,derogada,derogado"
+
+  # Retrieval
+  TOP_K: "8"
+  CHUNK_SIZE: "3000"
+  CHUNK_OVERLAP: "400"
+  QUERY_PREPARATION: "true"
+  SEARCH_QUERIES_MAX: "3"
+  SPARSE_SEARCH: "true"
+  KEYWORD_SEARCH: "true"
+  RERANK: "false"
+  MIN_SCORE: "0.45"
+  SCORE_MARGIN: "0.12"
+  MAX_CHUNKS_PER_DOC: "2"
+  CONTEXTUAL_INDEXING: "false"
+  HISTORY_TURNS: "0"
+
+  # Optional integrations
+  CONFLUENCE_ENABLED: "false"
+  CONFLUENCE_URL: ""
+  CONFLUENCE_SPACES: ""
+  CONVERSATION_RETENTION_DAYS: "180"
+  MONTHLY_BUDGET_USD: "10"

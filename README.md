@@ -397,6 +397,19 @@ What this does not give you: one server is still one point of failure (power, di
 
 Size it by measuring: the limit is the AI provider (Claude rate limits or local GPUs), then embeddings. A queue smooths peaks but does not add capacity: keep `QUEUE_MAX_PENDING` close to what the workers can answer in the wait you accept.
 
+## Kubernetes
+
+`deploy/k8s/` contains a Kustomize deployment for a managed cluster or a local kind cluster: nginx as the entry point, two `api` replicas with a HorizontalPodAutoscaler, one `scheduler` (indexing, administration), Postgres, Qdrant, one embeddings service and local Ollama (GPU optional). It deliberately leaves out the Redis queue/cache and the workers: the application runs them only when their URLs are set, so the HA topology remains available without code changes.
+
+```bash
+./deploy/k8s/scripts/install-tools.sh   # kubectl + kind (local)
+./deploy/k8s/scripts/kind-up.sh         # local cluster + metrics-server
+./deploy/k8s/scripts/deploy.sh          # build, load images, apply
+./deploy/k8s/scripts/smoke.sh           # health checks and one question
+```
+
+Full guide (cloud, secrets, scaling, GPU, storage, operations): [deploy/k8s/README.md](deploy/k8s/README.md).
+
 ## Operations
 
 - **Incremental ingestion**: only new or modified files (by hash) and Confluence pages or attachments with a new version are processed. Whatever is deleted at the source is also removed from the index.

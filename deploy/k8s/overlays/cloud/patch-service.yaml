@@ -1,0 +1,10 @@
+# Public entry point in the cloud: a LoadBalancer with the client IP preserved,
+# so the per-IP limits of nginx work as expected.
+- op: replace
+  path: /spec/type
+  value: LoadBalancer
+- op: add
+  path: /spec/externalTrafficPolicy
+  value: Local
+- op: remove
+  path: /spec/ports/0/nodePort

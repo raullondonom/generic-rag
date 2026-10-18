@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: transit-chat
+resources:
+  - ../../base
+  - documents-pvc.yaml
+images:
+  # Push the image to your registry and update this reference.
+  - name: genric-rag-app
+    newName: ghcr.io/raullondonom/transit-supporter-chat
+    newTag: "1.2.0"
+patches:
+  - path: patch-service.yaml
+    target:
+      kind: Service
+      name: nginx

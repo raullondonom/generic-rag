@@ -1,0 +1,42 @@
+# Downloads the model configured in rag-config into the Ollama PVC.
+# It is idempotent: `ollama pull` does nothing when the model is already there.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ollama-pull
+spec:
+  backoffLimit: 6
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: ollama-pull
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: pull
+          image: ollama/ollama:0.40.5
+          env:
+            - name: OLLAMA_HOST
+              value: "http://ollama:11434"
+            - name: OLLAMA_CHAT_MODEL
+              valueFrom:
+                configMapKeyRef:
+                  name: rag-config
+                  key: OLLAMA_CHAT_MODEL
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              until ollama list >/dev/null 2>&1; do
+                echo "waiting for ollama"
+                sleep 3
+              done
+              echo "pulling $OLLAMA_CHAT_MODEL"
+              ollama pull "$OLLAMA_CHAT_MODEL"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi

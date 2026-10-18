@@ -1,0 +1,14 @@
+# The documents folder must be readable from every api/worker/scheduler pod.
+# Replace the storage class with one that supports ReadWriteMany in your cloud
+# (EFS, Azure Files, Filess.io, CephFS, NFS...). On a single-node cluster,
+# ReadWriteOnce also works.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: documents
+spec:
+  accessModes: ["ReadWriteMany"]
+  storageClassName: nfs-client
+  resources:
+    requests:
+      storage: 10Gi
