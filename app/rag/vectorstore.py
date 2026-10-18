@@ -174,7 +174,8 @@ class VectorStore:
             return []
         self.ensure_keyword_index(field)
         result = self.client.facet(self.collection, key=field, limit=limit, exact=True)
-        return sorted((str(h.value) for h in result.hits if str(h.value).strip()), key=str.casefold)
+        # The facet can keep values whose chunks were all replaced (count 0) until Qdrant optimizes
+        return sorted((str(h.value) for h in result.hits if h.count > 0 and str(h.value).strip()), key=str.casefold)
 
     def count_text(self, text: str) -> int:
         """Chunks that contain all the words of `text` (full-text index)."""

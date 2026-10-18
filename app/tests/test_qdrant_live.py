@@ -30,5 +30,11 @@ def test_dense_sparse_and_text_search_on_a_real_collection():
         lexical = store.search_sparse(sparse.query_vector("how do I get travel costs reimbursed", "en"), 2)
         assert [h.payload["title"] for h in lexical] == ["Policy"]
         assert store.search([0.0, 1.0, 0.0], 2, text="reimbursement form")[0].payload["title"] == "Policy"
+        # A value whose chunks were replaced is no longer offered
+        store.upsert("folder:a", chunks, vectors, [{**p, "jurisdiction": "Nortth"} for p in payloads],
+                     sparse=[sparse.document_vector(c, "en") for c in chunks])
+        store.upsert("folder:a", chunks, vectors, [{**p, "jurisdiction": "North"} for p in payloads],
+                     sparse=[sparse.document_vector(c, "en") for c in chunks])
+        assert store.values("jurisdiction") == ["North"]
     finally:
         store.client.delete_collection(store.collection)
