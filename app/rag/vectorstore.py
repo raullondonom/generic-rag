@@ -18,6 +18,13 @@ log = logging.getLogger(__name__)
 TEXT_LANGUAGES = {"en": "english", "es": "spanish"}
 
 
+def text_condition(text: str) -> qm.FieldCondition:
+    """A keyword of several words must appear as that phrase; a single word, in any form (stemmed)."""
+    text = text.strip()
+    match = qm.MatchPhrase(phrase=text) if len(text.split()) > 1 else qm.MatchText(text=text)
+    return qm.FieldCondition(key="text", match=match)
+
+
 @dataclass
 class Hit:
     score: float
@@ -96,7 +103,7 @@ class VectorStore:
             if exclude_statuses else None
         must = [qm.FieldCondition(key=k, match=qm.MatchValue(value=v)) for k, v in (where or {}).items()]
         if text:
-            must.append(qm.FieldCondition(key="text", match=qm.MatchText(text=text)))
+            must.append(text_condition(text))
         must = must or None
         query_filter = qm.Filter(must=must, must_not=must_not) if must or must_not else None
         result = self.client.query_points(self.collection, query=vector, limit=limit, with_payload=True,
@@ -111,9 +118,14 @@ class VectorStore:
         lang = TEXT_LANGUAGES.get(self.language, "english")
         params = qm.TextIndexParams(
             type=qm.TextIndexType.TEXT, tokenizer=qm.TokenizerType.WORD, lowercase=True, ascii_folding=True,
-            min_token_len=2, max_token_len=40, stopwords=qm.Language(lang),
+            min_token_len=2, max_token_len=40, stopwords=qm.Language(lang), phrase_matching=True,
             stemmer=qm.SnowballParams(type=qm.Snowball.SNOWBALL, language=qm.SnowballLanguage(lang)),
         )
+        current = self.client.get_collection(self.collection).payload_schema.get("text")
+        if current is not None and current.params is not None:
+            if current.params.model_dump(exclude_none=True) == params.model_dump(exclude_none=True):
+                return
+            self.client.delete_payload_index(self.collection, "text", wait=True)  # settings changed
         self.client.create_payload_index(self.collection, "text", field_schema=params, wait=False)
 
     def ensure_keyword_index(self, field: str) -> None:
@@ -133,7 +145,7 @@ class VectorStore:
         """Chunks that contain all the words of `text` (full-text index)."""
         if not self.exists():
             return 0
-        flt = qm.Filter(must=[qm.FieldCondition(key="text", match=qm.MatchText(text=text))])
+        flt = qm.Filter(must=[text_condition(text)])
         return self.client.count(self.collection, count_filter=flt, exact=True).count
 
     def count(self) -> int:
