@@ -52,8 +52,10 @@
       <section class="panel">
         <h2 data-i18n="index">Index</h2>
         <div id="status" class="small" data-i18n="loading">Loading…</div>
+        <div id="control" class="small"></div>
         <div class="buttons">
           <button class="secondary" data-source="folder" data-i18n="reindexFolder">Reindex folder</button>
+          <button class="secondary" id="control-check" data-i18n="ctlCheck" hidden>Review sources</button>
           <button class="secondary" data-source="confluence" data-i18n="syncConfluence" hidden>Sync Confluence</button>
         </div>
         <p id="reindex-msg" class="muted small" aria-live="polite"></p>

@@ -1,0 +1,17 @@
+{
+  "registry_globs": ["sources_*.csv"],
+  "master_file": "sources_master.csv",
+  "csv_delimiter": ";",
+  "column_aliases": {},
+  "review_periods_days": {
+    "monthly": 30,
+    "quarterly": 91,
+    "semiannual": 182,
+    "annual": 365,
+    "on_change": 180
+  },
+  "default_review_days": 180,
+  "warn_days_before_expiry": 30,
+  "document_extensions": [".pdf", ".md", ".docx"],
+  "excluded_dirs": ["_control", "_archive"]
+}

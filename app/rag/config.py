@@ -62,12 +62,23 @@ class Settings(BaseSettings):
     chunk_overlap: int = 400
     history_turns: int = 6
 
+    # Statuses (lowercase, from the source registry) left out of the search, e.g. repealed documents
+    exclude_statuses: str = "repealed,derogada,derogado"
+
     # Local folder
     docs_path: str = "/data/docs"
     folder_scan_interval: int = 60  # seconds; 0 = automatic updates off (manual only)
     max_file_mb: int = 100
     ocr_enabled: bool = False
     ocr_langs: str = "eng+spa"
+    # Files or folders whose name starts with one of these are never indexed ("_" = metadata, archives)
+    ignore_prefixes: str = ".,_,~$"
+
+    # Source control folder inside the documents folder (registries of where each document came from)
+    control_dir: str = "_control"
+    control_check_time: str = "16:00"  # daily check of the registries, HH:MM in TZ; empty = manual only
+    control_check_online: bool = True  # also fingerprint the remote URLs (no AI, no reindex)
+    control_check_workers: int = 6
 
     # Confluence Cloud (optional, off by default)
     confluence_enabled: bool = False
@@ -81,21 +92,38 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
 
-    @field_validator("confluence_sync_time")
+    @field_validator("confluence_sync_time", "control_check_time")
     @classmethod
-    def _check_sync_time(cls, value: str) -> str:
+    def _check_daily_time(cls, value: str, info) -> str:
         value = value.strip()
         if value and not re.fullmatch(r"([01]?\d|2[0-3]):[0-5]\d", value):
-            raise ValueError("CONFLUENCE_SYNC_TIME must be HH:MM (24 h) or empty")
+            raise ValueError(f"{info.field_name.upper()} must be HH:MM (24 h) or empty")
         return value
+
+    @staticmethod
+    def _daily(value: str) -> tuple[int, int] | None:
+        if not value:
+            return None
+        hour, minute = value.split(":")
+        return int(hour), int(minute)
 
     @property
     def confluence_daily_sync(self) -> tuple[int, int] | None:
         """(hour, minute) of the daily Confluence sync, or None if it only runs manually."""
-        if not self.confluence_sync_time:
-            return None
-        hour, minute = self.confluence_sync_time.split(":")
-        return int(hour), int(minute)
+        return self._daily(self.confluence_sync_time)
+
+    @property
+    def control_daily_check(self) -> tuple[int, int] | None:
+        """(hour, minute) of the daily source control check, or None if it only runs manually."""
+        return self._daily(self.control_check_time)
+
+    @property
+    def ignore_prefix_list(self) -> tuple[str, ...]:
+        return tuple(p.strip() for p in self.ignore_prefixes.split(",") if p.strip())
+
+    @property
+    def excluded_status_list(self) -> list[str]:
+        return [s.strip().lower() for s in self.exclude_statuses.split(",") if s.strip()]
 
     @property
     def confluence_space_keys(self) -> list[str]:

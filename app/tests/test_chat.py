@@ -15,7 +15,8 @@ class FakeStore:
     def __init__(self, hits):
         self.hits = hits
 
-    def search(self, vector, limit):
+    def search(self, vector, limit, exclude_statuses=None):
+        self.excluded = exclude_statuses
         return self.hits
 
 

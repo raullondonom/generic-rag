@@ -60,6 +60,14 @@ const I18N = {
     cache: "cache {pct}%", budgetUsed: "{pct}% of the cap used",
     chunks: "{n} chunks", noDocs: "no documents", redacted: "{n} sensitive values redacted", syncing: "Syncing…", last: "Last: {date}", pending: "Pending",
     statusFailed: "Could not get the status", started: "Started: {list}",
+    official: "official source", stLbl: "status", validUntil: "valid until {date}", expiredOn: "expired on {date}",
+    ctlTitle: "Source control", ctlRecords: "{records} records in {n} registries", ctlNever: "Not reviewed yet",
+    ctlLast: "Last review: {date}", ctlOffline: " (offline)", ctlRunning: "Reviewing sources…",
+    ctlError: "Review failed: {error}", ctlNothing: "Nothing pending", ctlDetails: "Pending items",
+    ctlMore: "{n} more: see GET /api/control", ctlCheck: "Review sources", ctlStarted: "Source review started",
+    sec_expired: "expired", sec_expiring: "expiring soon", sec_changed: "changed online", sec_review_due: "review due",
+    sec_missing: "missing on disk", sec_unreachable: "unreachable URLs", sec_no_document: "no document found",
+    sec_unregistered: "without a registry row",
     folder: "Local folder", confluence: "Confluence", daily: "Every day at {time}", autoOff: "Automatic updates off: use the button",
     st_indexed: "indexed", st_unsupported: "unsupported", st_error: "with errors", st_empty: "no text",
     p_anthropic: "Claude (Anthropic)", p_ollama: "Ollama (local)",
@@ -85,6 +93,14 @@ const I18N = {
     cache: "caché {pct}%", budgetUsed: "{pct}% del tope usado",
     chunks: "{n} fragmentos", noDocs: "sin documentos", redacted: "{n} valores sensibles redactados", syncing: "Sincronizando…", last: "Última: {date}", pending: "Pendiente",
     statusFailed: "No se pudo obtener el estado", started: "Iniciado: {list}",
+    official: "fuente oficial", stLbl: "estado", validUntil: "vigente hasta {date}", expiredOn: "vencido el {date}",
+    ctlTitle: "Control de fuentes", ctlRecords: "{records} registros en {n} archivos de registro", ctlNever: "Sin revisar todavía",
+    ctlLast: "Última revisión: {date}", ctlOffline: " (sin conexión)", ctlRunning: "Revisando fuentes…",
+    ctlError: "La revisión falló: {error}", ctlNothing: "Nada pendiente", ctlDetails: "Pendientes",
+    ctlMore: "{n} más: ver GET /api/control", ctlCheck: "Revisar fuentes", ctlStarted: "Revisión de fuentes iniciada",
+    sec_expired: "vencidos", sec_expiring: "por vencer", sec_changed: "cambiaron en línea", sec_review_due: "revisión pendiente",
+    sec_missing: "faltan en disco", sec_unreachable: "URLs inaccesibles", sec_no_document: "sin documento encontrado",
+    sec_unregistered: "sin fila en el registro",
     folder: "Carpeta local", confluence: "Confluence", daily: "Todos los días a las {time}", autoOff: "Actualización automática apagada: usa el botón",
     st_indexed: "indexados", st_unsupported: "no soportados", st_error: "con error", st_empty: "sin texto",
     p_anthropic: "Claude (Anthropic)", p_ollama: "Ollama (local)",
@@ -216,9 +232,25 @@ function scrollDown() {
 }
 
 function sourceLink(s) {
+  // Folder documents open the local file; the official URL from the source registry goes next to it
+  if (s.source === "folder") {
+    const local = `<a href="/api/file?path=${encodeURIComponent(s.location)}" target="_blank">${escapeHtml(s.title)}</a>`;
+    return s.url ? `${local} · <a href="${escapeHtml(s.url)}" target="_blank" rel="noopener">${escapeHtml(tr("official"))}</a>` : local;
+  }
   if (s.url) return `<a href="${escapeHtml(s.url)}" target="_blank" rel="noopener">${escapeHtml(s.title)}</a>`;
-  if (s.source === "folder") return `<a href="/api/file?path=${encodeURIComponent(s.location)}" target="_blank">${escapeHtml(s.title)}</a>`;
   return escapeHtml(s.title);
+}
+
+function validity(s) {
+  // Returns HTML: every part is escaped here
+  const parts = [];
+  if (s.status) parts.push(escapeHtml(`${tr("stLbl")}: ${s.status}`));
+  if (s.valid_until) {
+    const expired = s.valid_until < new Date().toISOString().slice(0, 10);
+    parts.push(expired ? `<span class="error">${escapeHtml(tr("expiredOn", { date: s.valid_until }))}</span>`
+      : escapeHtml(tr("validUntil", { date: s.valid_until })));
+  }
+  return parts.length ? ` · ${parts.join(" · ")}` : "";
 }
 
 function renderSources(wrap, sources) {
@@ -228,7 +260,7 @@ function renderSources(wrap, sources) {
   det.innerHTML = `<summary>${escapeHtml(tr("sources", { n: sources.length }))}</summary><ol>` + sources.map((s) => {
     const where = s.source === "folder" ? s.location : s.source_label;
     const secs = s.sections && s.sections.length ? ` · ${escapeHtml(s.sections.slice(0, 4).join(", "))}` : "";
-    return `<li value="${s.n}">${sourceLink(s)} <span class="muted">— ${escapeHtml(where)}${secs} · ${tr("similarity")} ${s.score}</span></li>`;
+    return `<li value="${s.n}">${sourceLink(s)} <span class="muted">— ${escapeHtml(where)}${secs}${validity(s)} · ${tr("similarity")} ${s.score}</span></li>`;
   }).join("") + "</ol>";
   wrap.appendChild(det);
 }
@@ -616,10 +648,58 @@ async function loadStatus() {
     if (firstLoad) fillProviders(st);
     renderSpend(st);
     renderIndexStatus(st);
+    loadControl();
   } catch {
     $("#status").textContent = tr("statusFailed");
   }
 }
+
+// ------------------------------------------------------------ source control review (no AI, no reindex)
+
+const CONTROL_SECTIONS = ["expired", "expiring", "changed", "review_due", "missing", "unreachable", "no_document", "unregistered"];
+const CONTROL_ALERTS = new Set(["expired", "missing", "changed"]);
+
+async function loadControl() {
+  const box = $("#control");
+  try {
+    const c = await (await fetch("/api/control?findings=60")).json();
+    $("#control-check").hidden = !c.configured;
+    if (!c.configured) { box.innerHTML = ""; return; }
+    const run = c.last_run;
+    const counts = (run && run.counts) || {};
+    const alert = CONTROL_SECTIONS.some((s) => CONTROL_ALERTS.has(s) && counts[s]);
+    const cls = c.running || (run && run.status === "running") ? "running" : !run || run.status === "error" || alert ? "error" : "ok";
+    const summary = CONTROL_SECTIONS.filter((s) => counts[s])
+      .map((s) => `${counts[s]} ${tr(`sec_${s}`)}`).join(" · ") || (run ? tr("ctlNothing") : "");
+    const when = c.running ? tr("ctlRunning")
+      : !run ? tr("ctlNever")
+      : run.status === "error" ? tr("ctlError", { error: run.error || "" })
+      : tr("ctlLast", { date: new Date((run.finished_at || run.started_at) * 1000).toLocaleString(lang) }) + (run.online ? "" : tr("ctlOffline"));
+    const schedule = c.check_time ? tr("daily", { time: c.check_time }) : tr("autoOff");
+    const items = (run && run.findings || []).map((f) =>
+      `<li><b>${escapeHtml(tr(`sec_${f.section}`))}</b> ${escapeHtml(f.file || f.jurisdiction || "")}` +
+      `${f.date ? ` (${escapeHtml(f.date)})` : ""}${f.hint ? `<div class="muted">${escapeHtml(f.hint)}</div>` : ""}</li>`).join("");
+    const more = run && run.total_findings > (run.findings || []).length
+      ? `<p class="muted">${escapeHtml(tr("ctlMore", { n: run.total_findings - run.findings.length }))}</p>` : "";
+    box.innerHTML = `<div class="source-card"><b><span class="dot ${cls}"></span>${escapeHtml(tr("ctlTitle"))}</b>` +
+      `${escapeHtml(tr("ctlRecords", { records: c.records, n: c.registries.length }))}` +
+      `<div class="muted">${escapeHtml(when)} · ${escapeHtml(schedule)}</div>` +
+      (summary ? `<div>${escapeHtml(summary)}</div>` : "") +
+      (items ? `<details class="findings"><summary>${escapeHtml(tr("ctlDetails"))}</summary><ul>${items}</ul>${more}</details>` : "") +
+      "</div>";
+  } catch {
+    box.innerHTML = "";
+  }
+}
+
+$("#control-check").addEventListener("click", async () => {
+  const resp = await fetch("/api/control/check", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ online: true }),
+  });
+  const data = await resp.json();
+  $("#reindex-msg").textContent = resp.ok ? (data.started ? tr("ctlStarted") : tr("ctlRunning")) : data.detail;
+  setTimeout(loadControl, 1500);
+});
 
 function updateModel() {
   $("#model").textContent = models[providerSel.value] ? tr("model", { model: models[providerSel.value] }) : "";

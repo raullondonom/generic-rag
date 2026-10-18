@@ -26,7 +26,7 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
     ports:
-      - "127.0.0.1:6333:6333"   # dashboard: http://localhost:6333/dashboard
+      - "127.0.0.1:${QDRANT_PORT:-6333}:6333"   # dashboard: http://localhost:6333/dashboard
     deploy:
       resources:
         limits:
@@ -57,7 +57,7 @@ services:
     volumes:
       - ollama_models:/root/.ollama
     ports:
-      - "127.0.0.1:11434:11434"
+      - "127.0.0.1:${OLLAMA_PORT:-11434}:11434"
     environment:
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
       # Quantized KV cache: halves the VRAM used by the context
@@ -144,7 +144,7 @@ services:
         printf 'on_http_request:\n  - actions:\n      - type: basic-auth\n        config:\n          credentials:\n            - "%s"\n' "$$NGROK_BASIC_AUTH" > /tmp/policy.yml
         exec ngrok http rag-app:8000 --config /tmp/ngrok.yml --traffic-policy-file /tmp/policy.yml $${NGROK_DOMAIN:+--url $$NGROK_DOMAIN} --log stdout
     ports:
-      - "127.0.0.1:4040:4040"
+      - "127.0.0.1:${NGROK_PANEL_PORT:-4040}:4040"
 
 volumes:
   postgres_data:

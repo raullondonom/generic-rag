@@ -31,19 +31,23 @@ class Indexer:
         return bool(doc and doc["version"] == version and doc["status"] != "error")
 
     def index(self, doc_id: str, *, source: str, title: str, location: str, url: str, version: str,
-              sections: list[Section], container: str | None = None) -> int:
+              sections: list[Section], container: str | None = None, context: list[str] | None = None,
+              extra: dict | None = None) -> int:
+        """`context`: lines added under the title of every chunk; `extra`: additional payload fields."""
         chunks: list[str] = []
         payloads: list[dict] = []
         redactions = 0
+        context_text = "".join(f"\n{line}" for line in context or [])
         for section in sections:
             # Redact before chunking: what reaches Qdrant (and later the AI) is already clean
             result = self.redactor(section.text)
             redactions += result.total
-            header = title + (f" ({section.location})" if section.location else "")
+            header = title + (f" ({section.location})" if section.location else "") + context_text
             for piece in chunk_text(result.text, self.settings.chunk_size, self.settings.chunk_overlap):
-                # The title goes inside the chunk: better search and context for the AI
+                # Title and context go inside the chunk: better search and context for the AI
                 chunks.append(f"{header}\n\n{piece}")
                 payloads.append({
+                    **(extra or {}),
                     "source": source,
                     "title": title,
                     "location": location,

@@ -103,6 +103,36 @@ def test_feedback_is_optional_validated_and_survives_deletion(db):
     assert feedback.clear(cid2, a2) is False
 
 
+def test_control_review_is_stored(db, tmp_path):
+    import httpx
+
+    from rag.control import ControlFolder, RemoteChecker
+    from rag.control_store import ControlStore
+
+    (tmp_path / "_control").mkdir()
+    (tmp_path / "_control" / "sources_a.csv").write_text(
+        "file;title;download_url;valid_until\na.pdf;A;https://x.gov/a.pdf;2020-01-01\n", encoding="utf-8")
+    (tmp_path / "a.pdf").write_bytes(b"%PDF")
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, content=b"pdf")))
+    store = ControlStore(db)
+    assert store.last_run() is None
+
+    result = store.run(ControlFolder.load(tmp_path, "_control"), online=True,
+                       checker=RemoteChecker("t", 5, client=client, insecure_client=client))
+    assert result["counts"]["expired"] == 1
+    last = store.last_run()
+    assert last["status"] == "ok"
+    assert last["records"] == 1
+    assert last["counts"]["expired"] == 1
+    assert last["findings"][0]["file"] == "a.pdf"
+    assert "https://x.gov/a.pdf" in store.remote_state()
+
+    offline = store.run(ControlFolder.load(tmp_path, "_control"), online=False)
+    assert offline["counts"]["expired"] == 1
+    assert store.last_run()["online"] is False
+    assert "https://x.gov/a.pdf" in store.remote_state()  # an offline run keeps the fingerprints
+
+
 def test_purge_old_conversations(db):
     convs = ConversationStore(db)
     old = convs.create("old")

@@ -57,6 +57,13 @@ TEXTS: dict[str, dict[str, str]] = {
         "image_no_ocr": "image: enable OCR_ENABLED to extract its text",
         "doc_needs_antiword": ".doc requires antiword",
         "redaction_marker": "[REDACTED]",
+        # Context added to every chunk (folder path and source registry metadata)
+        "ctx_folder": "Folder",
+        "ctx_jurisdiction": "Jurisdiction",
+        "ctx_issuer": "Issuer",
+        "ctx_type": "Type",
+        "ctx_status": "Status",
+        "ctx_valid_until": "Valid until",
     },
     "es": {
         "no_context": (
@@ -102,6 +109,12 @@ TEXTS: dict[str, dict[str, str]] = {
         "image_no_ocr": "imagen: activa OCR_ENABLED para extraer su texto",
         "doc_needs_antiword": ".doc requiere antiword",
         "redaction_marker": "[REDACTADO]",
+        "ctx_folder": "Carpeta",
+        "ctx_jurisdiction": "Jurisdicción",
+        "ctx_issuer": "Emisor",
+        "ctx_type": "Tipo",
+        "ctx_status": "Estado",
+        "ctx_valid_until": "Vigente hasta",
     },
 }
 

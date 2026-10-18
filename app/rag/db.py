@@ -92,6 +92,26 @@ CREATE TABLE IF NOT EXISTS feedback (
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS ix_feedback_created ON feedback(created_at);
+
+-- Source control review (the documents folder is read only, so its state lives here)
+CREATE TABLE IF NOT EXISTS control_remote_state (
+    url         TEXT PRIMARY KEY,
+    state       JSONB NOT NULL,         -- fingerprint, content_type, etag, last_modified, checked_at, changed_at
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS control_runs (
+    id          BIGSERIAL PRIMARY KEY,
+    started_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at TIMESTAMPTZ,
+    online      BOOLEAN NOT NULL,
+    status      TEXT NOT NULL,          -- running | ok | error
+    registries  INTEGER,
+    records     INTEGER,
+    counts      JSONB,
+    findings    JSONB,
+    error       TEXT
+);
 """
 
 

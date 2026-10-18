@@ -122,6 +122,10 @@ select, textarea {
 .buttons { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
 .source-card { border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; margin-bottom: 8px; }
 .source-card b { display: block; margin-bottom: 2px; }
+.findings summary { cursor: pointer; color: var(--muted); margin-top: 4px; }
+.findings ul { margin: 6px 0 0; padding-left: 18px; max-height: 40vh; overflow-y: auto; }
+.findings li { margin-bottom: 4px; overflow-wrap: anywhere; }
+.findings li b { display: inline; font-weight: 600; }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
 .dot.ok { background: var(--ok); } .dot.running { background: var(--warn); } .dot.error { background: var(--err); }
 .meter { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; margin-top: 4px; }

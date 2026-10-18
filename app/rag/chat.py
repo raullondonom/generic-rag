@@ -22,7 +22,8 @@ GREETING_RE = re.compile(
     r"gracias|muchas gracias|thanks|thank you|ok|okay|vale)[\s!¡.,]*$",
     re.IGNORECASE,
 )
-SOURCE_FIELDS = ("n", "title", "location", "url", "source", "source_label", "score", "sections")
+SOURCE_FIELDS = ("n", "title", "location", "url", "source", "source_label", "score", "sections",
+                 "status", "valid_until", "jurisdiction")
 
 
 def group_hits(hits: list[Hit], language: str = "en") -> list[dict]:
@@ -43,6 +44,9 @@ def group_hits(hits: list[Hit], language: str = "en") -> list[dict]:
                 "source": p.get("source", ""),
                 "source_label": source_label,
                 "score": round(hit.score, 3),
+                "status": p.get("status", ""),
+                "valid_until": p.get("valid_until", ""),
+                "jurisdiction": p.get("jurisdiction", ""),
                 "sections": [],
                 "texts": [],
             }
@@ -86,7 +90,8 @@ class ChatService:
 
     async def retrieve(self, query: str) -> list[Hit]:
         vector = await asyncio.to_thread(self.embedder.embed_query, query)
-        hits = await asyncio.to_thread(self.store.search, vector, self.settings.top_k)
+        hits = await asyncio.to_thread(self.store.search, vector, self.settings.top_k,
+                                       self.settings.excluded_status_list)
         if not hits:
             return []
         # Absolute threshold + margin relative to the best hit (drops weak matches)

@@ -36,7 +36,7 @@ class VectorStore:
                 self.collection,
                 vectors_config=qm.VectorParams(size=dim, distance=qm.Distance.COSINE),
             )
-            for field in ("doc_id", "source"):
+            for field in ("doc_id", "source", "status"):
                 self.client.create_payload_index(self.collection, field, qm.PayloadSchemaType.KEYWORD)
         self._ready = True
 
@@ -79,10 +79,17 @@ class VectorStore:
             wait=True,
         )
 
-    def search(self, vector: list[float], limit: int) -> list[Hit]:
+    def search(self, vector: list[float], limit: int, exclude_statuses: list[str] | None = None) -> list[Hit]:
+        """Nearest chunks. Chunks whose registry `status` is in `exclude_statuses` (e.g. repealed) are skipped."""
         if not self.exists():
             return []
-        result = self.client.query_points(self.collection, query=vector, limit=limit, with_payload=True)
+        query_filter = None
+        if exclude_statuses:
+            query_filter = qm.Filter(must_not=[
+                qm.FieldCondition(key="status", match=qm.MatchAny(any=list(exclude_statuses)))
+            ])
+        result = self.client.query_points(self.collection, query=vector, limit=limit, with_payload=True,
+                                          query_filter=query_filter)
         return [Hit(score=p.score, text=p.payload.get("text", ""), payload=p.payload) for p in result.points]
 
     def count(self) -> int:

@@ -155,10 +155,38 @@ Every option is documented in [.env.example](.env.example). The most important o
 | `CONFLUENCE_SYNC_TIME` | `16:00` | Daily Confluence sync time (HH:MM in `TZ`; empty = manual only). The first start syncs right away |
 | `FOLDER_SCAN_INTERVAL` | `60` | Seconds between folder scans (`0` = automatic updates off; reindex from the side panel) |
 | `TOP_K` / `MIN_SCORE` | `8` / `0.45` | Retrieved chunks and minimum similarity |
+| `IGNORE_PREFIXES` | `.,_,~$` | Files and folders starting with these are never indexed |
+| `CONTROL_DIR` / `CONTROL_CHECK_TIME` | `_control` / `16:00` | Source control folder and daily review time (empty = manual) |
+| `CONTROL_CHECK_ONLINE` | `true` | Also fingerprint the remote URLs in the review |
+| `EXCLUDE_STATUSES` | `repealed,derogada,derogado` | Registry statuses left out of the search |
+| `MAX_FILE_MB` | `100` | Bigger files are skipped (raise it for large manuals) |
 | `OCR_ENABLED` | `false` | OCR (Tesseract) for scanned PDFs and images |
 
 After changing `.env`, apply it with `docker compose up -d`.
 If you change `CHUNK_SIZE`, `CHUNK_OVERLAP` or the redaction settings, reindex everything (see below). Changing `EMBEDDING_MODEL` reindexes by itself.
+
+## Documents folder layout and source control
+
+Any folder layout works, but these conventions make retrieval and maintenance better:
+
+- **Topic folders in English, numbered**, and names without accents or spaces, e.g. `01_national_laws/`, `05_local_regulations/<department>/<municipality>/`. The relative folder path goes into the context of every chunk, so similar documents of different places (one decree per city, for example) are told apart.
+- **The `_` prefix is reserved for what must not be indexed**: the control folder, archived versions (`_archive/`), history. Every file or folder starting with `IGNORE_PREFIXES` (`.`, `_`, `~$` by default) is skipped, so content folders must not start with `_`.
+- **A control folder** (`_control/`, see [documents/_control](documents/_control)) records where every document came from:
+
+| File | Content |
+|---|---|
+| `control_config.json` | Registry file patterns, CSV delimiter, `column_aliases` (to read registries with other column names, e.g. in Spanish), review periods, expiry warning window, `document_extensions`, `excluded_dirs` |
+| `sources_*.csv` | One row per document (`file` relative to the documents root) with `title`, `doc_type`, `number`, `year`, `issuer`, `scope`, `jurisdiction`, `topic`, `download_url`, `reference_url`, `method`, `issue_date`, `retrieved_date`, `status`, `valid_until`, `review_frequency`, `change_check`, `notes`. A row with an empty `file` records a place where nothing was found. |
+
+What the app does with it:
+
+1. **Enriches every document** with its registry row: the registry title instead of the file name, and jurisdiction, issuer, type, status and valid-until date in the chunk context. Sources show the status and link to both the local file and the official `reference_url`. Editing a row reindexes only that document.
+2. **Leaves repealed documents out of the search** (`EXCLUDE_STATUSES`, matched against the lowercase `status`). Folders listed in `excluded_dirs` are never indexed.
+3. **Reviews the sources every day** (`CONTROL_CHECK_TIME`, 16:00 by default; empty = only from the side panel), without AI and **without downloading or reindexing anything**. It reports expired and soon-to-expire documents, reviews due by `review_frequency`, registered files missing on disk, places with no document, documents with no registry row, unreachable URLs and **remote sources whose content changed** (SHA-256 of the file, or of the visible text for HTML pages; ETag / Last-Modified avoid downloading unchanged files; the first check only stores fingerprints). The documents folder stays read only: the review state lives in Postgres. The side panel shows the result; the full list is at `GET /api/control`, and `docker compose exec rag-app python -m rag.control check [--offline]` runs it from the command line.
+
+## Several instances on one machine
+
+To run one instance per document collection side by side, give each one its own `.env` with `COMPOSE_PROJECT_NAME` and free ports (`APP_PORT`, `QDRANT_PORT`, `OLLAMA_PORT`, `NGROK_PANEL_PORT`). Keep in mind that each instance starts its own embeddings service (about 1.5 GB of VRAM on GPU).
 
 ## Ratings
 
@@ -200,6 +228,8 @@ To close it, run `docker compose stop ngrok`. Keep in mind that anyone who gets 
 | `GET` / `DELETE` | `/api/conversations/{id}` | Messages of a conversation (with their ratings) / delete it |
 | `PUT` / `DELETE` | `/api/conversations/{id}/messages/{message_id}/feedback` | `{rating: 1\|-1, reason?, comment?}` / remove the rating |
 | `GET` | `/api/feedback/summary?days=30` | Aggregated ratings |
+| `GET` | `/api/control?findings=200` | Control folder registries and the last source review |
+| `POST` | `/api/control/check` | `{online: true}` → starts a source review (no AI, nothing downloaded or reindexed) |
 | `GET` | `/api/status` | Index, providers, Claude spend and last sync |
 | `GET` | `/api/documents?source=&status=` | Processed documents (`indexed`, `unsupported`, `error`, `empty`) |
 | `POST` | `/api/reindex` | `{source: folder\|confluence\|all, full: false}` |

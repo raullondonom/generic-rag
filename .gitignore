@@ -12,6 +12,10 @@ app/bench/results/
 documents/*
 !documents/.gitkeep
 !documents/example-*
+!documents/_control/
+documents/_control/*
+!documents/_control/control_config.json
+!documents/_control/sources_example.csv
 
 # Python
 __pycache__/

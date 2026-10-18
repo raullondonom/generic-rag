@@ -20,6 +20,8 @@ from . import health
 from .chat import ChatService
 from .config import get_settings
 from .conversations import ConversationStore
+from .control import ControlFolder
+from .control_store import ControlStore
 from .db import Database
 from .embeddings import Embedder
 from .feedback import REASONS, FeedbackError, FeedbackStore
@@ -54,6 +56,7 @@ class Services:
         self.spend = SpendTracker(self.db, settings.monthly_budget_usd, settings.tz, language=settings.language)
         self.conversations = ConversationStore(self.db)
         self.feedback = FeedbackStore(self.db)
+        self.control = ControlStore(self.db)
         self.chat = ChatService(settings, self.embedder, self.store, build_llms(settings, self.spend),
                                 self.conversations)
         self.scheduler = BackgroundScheduler(timezone="UTC")
@@ -86,6 +89,17 @@ class Services:
         if self._embeddings_ready("confluence", lambda: self.sync_confluence(full)):
             self.confluence.sync(full=full)
 
+    def check_sources(self, online: bool | None = None) -> None:
+        """Daily review of the source registries (no AI, nothing downloaded or reindexed)."""
+        folder = ControlFolder.load(settings.docs_path, settings.control_dir)
+        if folder is None:
+            return
+        try:
+            self.control.run(folder, online=settings.control_check_online if online is None else online,
+                             workers=settings.control_check_workers)
+        except Exception:  # noqa: BLE001 - the error is stored with the run
+            log.exception("Source control review failed")
+
     def purge_conversations(self) -> None:
         removed = self.conversations.purge(settings.conversation_retention_days)
         if removed:
@@ -111,6 +125,13 @@ class Services:
                 self.scheduler.add_job(self.sync_confluence, "date", run_date=now + timedelta(seconds=10))
         elif settings.confluence_enabled:
             log.warning("CONFLUENCE_ENABLED=true but the URL, credentials or CONFLUENCE_SPACES are missing")
+        control_daily = settings.control_daily_check
+        if control_daily:
+            self.scheduler.add_job(self.check_sources, "cron", hour=control_daily[0], minute=control_daily[1],
+                                   timezone=ZoneInfo(settings.tz), id="control", max_instances=1, coalesce=True,
+                                   misfire_grace_time=3600)
+            log.info("Source control review every day at %s (%s), only when %s exists",
+                     settings.control_check_time, settings.tz, settings.control_dir)
         self.scheduler.add_job(self.purge_conversations, "interval", hours=24, id="purge",
                                next_run_time=now + timedelta(minutes=1))
         self.scheduler.start()
@@ -155,6 +176,10 @@ class FeedbackRequest(BaseModel):
     rating: int = Field(ge=-1, le=1)
     reason: str | None = None
     comment: str | None = Field(default=None, max_length=2000)
+
+
+class ControlCheckRequest(BaseModel):
+    online: bool = True
 
 
 class ReindexRequest(BaseModel):
@@ -232,6 +257,36 @@ def unrate_message(conversation_id: str, message_id: int):
 def feedback_summary(days: int = Query(30, ge=1, le=3650)):
     """Aggregated ratings (no conversation content), to see which provider or model to improve."""
     return {**services.feedback.summary(days), "reasons": list(REASONS)}
+
+
+@app.get("/api/control")
+def control_status(findings: int = Query(200, ge=0, le=10000)):
+    """Source control folder: registries and the last review (findings truncated to `findings`)."""
+    folder = ControlFolder.load(settings.docs_path, settings.control_dir)
+    last = services.control.last_run()
+    if last and last.get("findings") is not None:
+        last["total_findings"] = len(last["findings"])
+        last["findings"] = last["findings"][:findings]
+    return {
+        "configured": folder is not None,
+        "control_dir": settings.control_dir,
+        "registries": [p.name for p in folder.registry_files()] if folder else [],
+        "records": len(folder.rows()) if folder else 0,
+        "check_time": settings.control_check_time,
+        "running": services.control.lock.locked(),
+        "last_run": last,
+    }
+
+
+@app.post("/api/control/check")
+def control_check(req: ControlCheckRequest):
+    """Starts a review in the background. It only reports: nothing is downloaded or reindexed."""
+    if ControlFolder.load(settings.docs_path, settings.control_dir) is None:
+        raise HTTPException(404, f"No control folder ({settings.control_dir}) in the documents folder")
+    if services.control.lock.locked():
+        return {"started": False, "reason": "already running"}
+    threading.Thread(target=services.check_sources, kwargs={"online": req.online}, daemon=True).start()
+    return {"started": True, "online": req.online}
 
 
 @app.get("/api/status")
