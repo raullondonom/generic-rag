@@ -1,0 +1,55 @@
+# Internal balancer (not published): embeddings nodes and Qdrant nodes. The application talks to these two
+# ports only, so nodes can be added, removed or restarted one at a time without touching it.
+
+upstream embeddings_nodes {
+    zone embeddings_nodes 64k;
+    least_conn;
+    server embeddings-1:80 max_fails=2 fail_timeout=10s;
+    server embeddings-2:80 max_fails=2 fail_timeout=10s;
+    ${EMBEDDINGS_NODE_3}
+    keepalive 32;
+}
+
+upstream qdrant_nodes {
+    zone qdrant_nodes 64k;
+    least_conn;
+    server qdrant-1:6333 max_fails=2 fail_timeout=10s;
+    server qdrant-2:6333 max_fails=2 fail_timeout=10s;
+    server qdrant-3:6333 max_fails=2 fail_timeout=10s;
+    keepalive 32;
+}
+
+server {
+    listen 80;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_set_header Host $host;
+    proxy_connect_timeout 2s;
+    # Retries on another node are safe here: embedding and searching are idempotent
+    proxy_next_upstream error timeout http_502 http_503 http_504;
+    proxy_next_upstream_tries 3;
+    client_max_body_size 8m;
+    location / {
+        proxy_pass http://embeddings_nodes;
+        proxy_read_timeout 300s;
+    }
+    location = /nginx-health { access_log off; return 200 "ok"; }
+}
+
+server {
+    listen 6333;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_set_header Host $host;
+    proxy_connect_timeout 2s;
+    client_max_body_size 64m;
+    # Searches and reads are retried on another node; a write is not repeated by the balancer
+    # (the Qdrant client retries it, and the points have deterministic ids, so repeating is harmless)
+    location / {
+        proxy_pass http://qdrant_nodes;
+        proxy_read_timeout 120s;
+        proxy_next_upstream error timeout http_502 http_503 http_504;
+        proxy_next_upstream_tries 3;
+        proxy_next_upstream_timeout 30s;
+    }
+}

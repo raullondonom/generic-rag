@@ -1,0 +1,297 @@
+# High availability on one server (or several): Nginx in front, durable queue, answer cache, 3 Qdrant nodes in a
+# cluster and 2-3 embeddings nodes. It is a layer over docker-compose.yml:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d --build
+#
+# The single-node services (rag-app, qdrant, embeddings) move to the "single" profile, so the previous
+# deployment is still one `docker compose up -d` away (without this file). Postgres, Ollama and the model volume
+# are shared with it. See "High availability" in the README.
+#
+#   edge ──► api-1, api-2 ──► Redis queue ──► worker ×2 ──► nginx-internal ──► embeddings ×2-3 / Qdrant ×3
+#   scheduler (indexing + administration, exactly one)
+
+x-rag-environment: &rag-environment
+  QDRANT_URL: http://nginx-internal:6333
+  EMBEDDING_URL: http://nginx-internal:80
+  EMBEDDING_MODEL: ${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}
+  DOCS_PATH: /data/docs
+  DATABASE_URL: postgresql://rag:${POSTGRES_PASSWORD:-${GENRIC_RAG_POSTGRES_PASSWORD:-rag-local}}@postgres:5432/rag
+  REDIS_QUEUE_URL: redis://redis-queue:6379/0
+  REDIS_CACHE_URL: redis://redis-cache:6379/0
+  QDRANT_REPLICATION_FACTOR: 3
+  QDRANT_WRITE_CONSISTENCY: 2
+  DB_POOL_MAX: ${DB_POOL_MAX:-6}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-${GENRIC_RAG_ANTHROPIC_API_KEY:-}}
+  ADMIN_TOKEN: ${ADMIN_TOKEN:-${GENRIC_RAG_ADMIN_TOKEN:-}}
+  CONFLUENCE_EMAIL: ${CONFLUENCE_EMAIL:-${JIRA_EMAIL:-}}
+  CONFLUENCE_TOKEN: ${CONFLUENCE_TOKEN:-${JIRA_TOKEN:-}}
+
+x-rag-app: &rag-app
+  build: ./app
+  image: genric-rag-app:local
+  restart: unless-stopped
+  env_file:
+    - path: .env
+      required: false
+  volumes:
+    - ${DOCS_HOST_PATH:-./documents}:/data/docs:ro
+  stop_grace_period: 60s
+
+x-live-check: &live-check
+  test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/health/live', timeout=3)"]
+  interval: 10s
+  timeout: 5s
+  retries: 6
+  start_period: 20s
+
+x-ready-check: &ready-check
+  test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"]
+  interval: 10s
+  timeout: 5s
+  retries: 3
+  start_period: 20s
+
+x-qdrant: &qdrant
+  image: qdrant/qdrant:v1.19.2
+  restart: unless-stopped
+  deploy:
+    resources:
+      limits:
+        memory: ${QDRANT_MEMORY:-1g}
+  healthcheck:
+    test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/6333 && printf 'GET /readyz HTTP/1.0\\r\\n\\r\\n' >&3 && head -1 <&3 | grep -q 200"]
+    interval: 10s
+    timeout: 5s
+    retries: 6
+    start_period: 15s
+
+x-embeddings: &embeddings
+  image: ${TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cpu-1.9}
+  restart: unless-stopped
+  command: ["--model-id", "${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}", "--max-client-batch-size", "64", "--max-batch-tokens", "${TEI_MAX_BATCH_TOKENS:-2048}"]
+  environment:
+    HF_TOKEN: ${HF_TOKEN:-}
+  volumes:
+    - hf_models:/data
+  deploy:
+    resources:
+      limits:
+        memory: ${EMBEDDINGS_MEMORY:-5g}
+  healthcheck:
+    test: ["CMD", "curl", "-fs", "http://127.0.0.1:80/health"]
+    interval: 10s
+    timeout: 5s
+    retries: 30
+    start_period: 30s
+
+services:
+  # ---- single-node services of docker-compose.yml: replaced by the ones below
+  rag-app:
+    profiles: ["single"]
+  qdrant:
+    profiles: ["single"]
+  embeddings:
+    profiles: ["single"]
+
+  postgres:
+    command: ["postgres", "-c", "max_connections=200"]
+
+  # ---- queue and cache: two instances because they need opposite policies
+  # The queue never evicts and writes to disk every second: an accepted question survives a restart.
+  redis-queue:
+    image: redis:8.2-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "${REDIS_QUEUE_MEMORY:-512mb}", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis_queue_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+
+  # Disposable: least recently used answers go away when it is full
+  redis-cache:
+    image: redis:8.2-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "${REDIS_CACHE_MEMORY:-512mb}", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+
+  # ---- Qdrant cluster: 3 nodes, every node holds a full copy; one can be updated or fail at a time
+  qdrant-1:
+    <<: *qdrant
+    command: ["./entrypoint.sh", "--uri", "http://qdrant-1:6335"]
+    environment:
+      QDRANT__CLUSTER__ENABLED: "true"
+    volumes:
+      - qdrant_1_data:/qdrant/storage
+  qdrant-2:
+    <<: *qdrant
+    command: ["./entrypoint.sh", "--bootstrap", "http://qdrant-1:6335", "--uri", "http://qdrant-2:6335"]
+    environment:
+      QDRANT__CLUSTER__ENABLED: "true"
+    volumes:
+      - qdrant_2_data:/qdrant/storage
+    depends_on:
+      qdrant-1:
+        condition: service_healthy
+  qdrant-3:
+    <<: *qdrant
+    command: ["./entrypoint.sh", "--bootstrap", "http://qdrant-1:6335", "--uri", "http://qdrant-3:6335"]
+    environment:
+      QDRANT__CLUSTER__ENABLED: "true"
+    volumes:
+      - qdrant_3_data:/qdrant/storage
+    depends_on:
+      qdrant-1:
+        condition: service_healthy
+
+  # ---- embeddings: 2 nodes; the third one is optional (profile "embeddings3", for CPU-only servers with room)
+  embeddings-1:
+    <<: *embeddings
+  embeddings-2:
+    <<: *embeddings
+    depends_on:
+      embeddings-1:
+        condition: service_healthy  # the first one downloads the model into the shared volume
+  embeddings-3:
+    <<: *embeddings
+    profiles: ["embeddings3"]
+    depends_on:
+      embeddings-1:
+        condition: service_healthy
+
+  # Internal balancer, not published: the application sees one embeddings service and one Qdrant
+  nginx-internal:
+    image: nginx:1.28-alpine
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    # The third embeddings node is added to the pool only when that container exists
+    command:
+      - |
+        if getent hosts embeddings-3 >/dev/null 2>&1; then
+          export EMBEDDINGS_NODE_3="server embeddings-3:80 max_fails=2 fail_timeout=10s;"
+        else
+          export EMBEDDINGS_NODE_3=""
+        fi
+        exec /docker-entrypoint.sh nginx -g "daemon off;"
+    volumes:
+      - ./deploy/nginx/internal.conf.template:/etc/nginx/templates/default.conf.template:ro
+    depends_on:
+      qdrant-1:
+        condition: service_healthy
+      qdrant-2:
+        condition: service_started
+      qdrant-3:
+        condition: service_started
+      embeddings-1:
+        condition: service_started
+      embeddings-2:
+        condition: service_started
+      embeddings-3:
+        condition: service_started
+        required: false
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:80/nginx-health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ---- application: stateless, replicated
+  api-1: &api
+    <<: *rag-app
+    environment:
+      <<: *rag-environment
+      ROLE: api
+    healthcheck: *ready-check
+    depends_on: &api-deps
+      postgres:
+        condition: service_healthy
+      redis-queue:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      nginx-internal:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+  api-2:
+    <<: *api
+
+  # Takes questions from the queue and answers them
+  worker:
+    <<: *rag-app
+    environment:
+      <<: *rag-environment
+      ROLE: worker
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-16}
+    healthcheck: *live-check
+    depends_on: *api-deps
+    deploy:
+      replicas: ${WORKER_REPLICAS:-2}
+      resources:
+        limits:
+          memory: 1536m
+
+  # Indexing, source review, purge and the administration panel. Exactly one instance.
+  scheduler:
+    <<: *rag-app
+    environment:
+      <<: *rag-environment
+      ROLE: scheduler
+    healthcheck: *live-check
+    depends_on: *api-deps
+    deploy:
+      resources:
+        limits:
+          memory: 3g
+
+  # ---- public entry point
+  edge:
+    image: nginx:1.28-alpine
+    restart: unless-stopped
+    environment:
+      # Requests per second per IP (questions are expensive) and how many it tolerates in a burst
+      RATE_ASK: ${HA_RATE_ASK:-2r/s}
+      BURST_ASK: ${HA_BURST_ASK:-10}
+      RATE_API: ${HA_RATE_API:-20r/s}
+      BURST_API: ${HA_BURST_API:-40}
+      CONN_PER_IP: ${HA_CONN_PER_IP:-100}
+      MSG_BUSY: Too many requests. Try again in a few seconds.
+      MSG_DOWN: Service temporarily unavailable. Try again in a moment.
+    volumes:
+      - ./deploy/nginx/edge.conf.template:/etc/nginx/templates/default.conf.template:ro
+    ports:
+      - "${HA_BIND:-0.0.0.0}:${HA_PORT:-8080}:8080"
+    depends_on:
+      api-1:
+        condition: service_healthy
+      api-2:
+        condition: service_healthy
+      scheduler:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health/live"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  redis_queue_data:
+  qdrant_1_data:
+  qdrant_2_data:
+  qdrant_3_data:
