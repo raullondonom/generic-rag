@@ -93,3 +93,10 @@ def test_system_prompt_mentions_confluence_only_when_enabled():
         assert "Confluence" not in system_prompt(lang)
         assert "Confluence" in system_prompt(lang, confluence=True)
         assert "<" not in system_prompt(lang, confluence=True)
+
+
+def test_system_prompt_asks_for_the_answer_and_basis_format():
+    from rag.prompts import system_prompt
+
+    assert "**Answer:**" in system_prompt("en") and "**Basis:**" in system_prompt("en")
+    assert "**Respuesta:**" in system_prompt("es") and "**Sustento:**" in system_prompt("es")

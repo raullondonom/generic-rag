@@ -153,6 +153,25 @@ function renderMarkdown(md) {
   return out.join("");
 }
 
+// Answers come as "Respuesta: … Sustento: …" (see prompts.py): the answer stands out and the basis
+// folds. Anything else (old messages, guardrails, deviations) is rendered as plain Markdown.
+const ANSWER_RE = /^\s*\**\s*(Respuesta|Answer)\s*:?\s*\**\s*:?\s*/i;
+const BASIS_RE = /(?:^|\n)\s*\**\s*(Sustento|Basis)\s*:?\s*\**\s*:?[ \t]*\n?/i;
+
+function renderAnswer(text) {
+  const head = text.match(ANSWER_RE);
+  if (!head) return renderMarkdown(text);
+  const rest = text.slice(head[0].length);
+  const split = rest.match(BASIS_RE);
+  const answer = split ? rest.slice(0, split.index) : rest;
+  let html = `<div class="answer"><span class="label">${escapeHtml(head[1])}</span>${renderMarkdown(answer)}</div>`;
+  if (split) {
+    const label = `${split[1][0].toUpperCase()}${split[1].slice(1).toLowerCase()}`;
+    html += `<details class="basis" open><summary>${escapeHtml(label)}</summary>${renderMarkdown(rest.slice(split.index + split[0].length))}</details>`;
+  }
+  return html;
+}
+
 // ------------------------------------------------------------ side panel (mobile)
 
 function setDrawer(open) {
@@ -191,7 +210,7 @@ function addMessage(role, text) {
   const bubble = document.createElement("div");
   bubble.className = "bubble";
   if (role === "user") bubble.textContent = text;
-  else bubble.innerHTML = renderMarkdown(text);
+  else bubble.innerHTML = renderAnswer(text);
   wrap.appendChild(bubble);
   messagesEl.appendChild(wrap);
   scrollDown();
@@ -496,7 +515,7 @@ async function ask(question) {
         } else if (event === "sources") sources = data;
         else if (event === "token") {
           answer += data;
-          bubble.innerHTML = renderMarkdown(answer);
+          bubble.innerHTML = renderAnswer(answer);
           scrollDown();
         } else if (event === "done") messageId = data.message_id || null;
         else if (event === "error") throw new Error(data);
