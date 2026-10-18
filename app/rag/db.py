@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
+import time
 from contextlib import contextmanager
 from typing import Iterator
 
 import psycopg
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
+
+SCHEMA_KEY = "schema_hash"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS documents (
@@ -126,8 +130,36 @@ class Database:
                                    kwargs={"row_factory": dict_row, "autocommit": True})
 
     def migrate(self) -> None:
-        with self.conn() as c:
-            c.execute(SCHEMA)
+        """Creates the schema. Safe with several processes starting while others already serve traffic.
+
+        Even with IF NOT EXISTS, CREATE INDEX locks its table and can deadlock with a transaction of a process
+        that is already running (a rolling restart). So the schema is applied only when it changed (its hash is
+        kept in `settings`), under an advisory lock, and a deadlock is retried."""
+        digest = hashlib.sha256(SCHEMA.encode()).hexdigest()[:16]
+        with self.pool.connection() as c:
+            c.execute("SELECT pg_advisory_lock(727001)")
+            try:
+                if self._applied(c) == digest:
+                    return
+                for attempt in range(5):
+                    try:
+                        c.execute(SCHEMA)
+                        break
+                    except psycopg.errors.DeadlockDetected:
+                        if attempt == 4:
+                            raise
+                        time.sleep(1 + attempt)
+                c.execute("INSERT INTO settings (key, value) VALUES (%s, %s) "
+                          "ON CONFLICT (key) DO UPDATE SET value = excluded.value", (SCHEMA_KEY, digest))
+            finally:
+                c.execute("SELECT pg_advisory_unlock(727001)")
+
+    @staticmethod
+    def _applied(c: psycopg.Connection) -> str | None:
+        if c.execute("SELECT to_regclass('settings') AS t").fetchone()["t"] is None:
+            return None
+        row = c.execute("SELECT value FROM settings WHERE key = %s", (SCHEMA_KEY,)).fetchone()
+        return row["value"] if row else None
 
     @contextmanager
     def conn(self) -> Iterator[psycopg.Connection]:

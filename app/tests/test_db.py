@@ -156,3 +156,25 @@ def test_budget_guard(db):
     summary = spend.summary()
     assert summary["calls"] == 1  # simulated calls do not count
     assert summary["remaining_usd"] == pytest.approx(0.02)
+
+
+def test_migrate_is_applied_once_and_safe_in_parallel(db):
+    import threading
+
+    from rag.db import SCHEMA_KEY
+
+    first = db.get_setting(SCHEMA_KEY)
+    assert first  # recorded by the fixture's migrate()
+    errors = []
+
+    def again():
+        try:
+            db.migrate()
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=again) for _ in range(4)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert not errors
+    assert db.get_setting(SCHEMA_KEY) == first
