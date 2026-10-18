@@ -35,6 +35,12 @@ class FakeStore:
             hits = [h for h in hits if text.lower() in h.text.lower()]
         return hits
 
+    def count(self):
+        return len(self.hits)
+
+    def count_text(self, text):
+        return sum(text.lower() in h.text.lower() for h in self.hits)
+
 
 class FakeConversations:
     """Same interface as ConversationStore, in memory."""
@@ -207,13 +213,15 @@ def test_search_is_prepared_and_the_answer_sees_the_interpretation():
 def test_keywords_add_searches_among_the_chunks_that_contain_them():
     literal = Hit(score=0.6, text="The reimbursement form is in annex 3", payload={
         "doc_id": "folder:annex.md", "chunk_index": 0, "title": "annex.md", "source": "folder"})
-    service, llm, _ = make([hit(0.9), literal], prepared={
-        "corrected": "refund form", "standalone": "where is the refund form", "queries": [],
-        "keywords": ["refund form", "reimbursement", "REIMBURSEMENT"], "missing": []})
+    service, llm, _ = make([hit(0.9), hit(0.85, "folder:b.md"), literal], settings_kwargs={"keyword_max_share": 0.5},
+                           prepared={"corrected": "refund form", "standalone": "where is the refund form",
+                                     "queries": [], "keywords": ["refund form", "reimbursement", "REIMBURSEMENT",
+                                                                 "content"], "missing": []})
     events = run(service, "refnd form?")
     done = next(d for k, d in events if k == "done")
-    assert done["keywords"] == ["refund form", "reimbursement"]
-    assert [t for t in service.store.texts if t] == ["refund form", "reimbursement"]
+    # "refund form" is in no chunk and "content" in 2 of 3 (more than the 50 % allowed here)
+    assert done["keywords"] == ["reimbursement"]
+    assert [t for t in service.store.texts if t] == ["reimbursement"]
     assert "annex.md" in [s["title"] for s in next(d for k, d in events if k == "sources")]
     assert "reimbursement" in sent_messages(llm)[-1]["content"]
 

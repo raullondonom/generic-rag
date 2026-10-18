@@ -112,26 +112,44 @@ class ChatService:
             data = None
         return query_prep.from_model(data or None, question, self.settings.search_queries_max, max_keywords)
 
+    async def specific_keywords(self, keywords: list[str]) -> list[str]:
+        """The keywords present in the index and specific enough to filter (rarest first)."""
+        if not keywords or not self.settings.keyword_search:
+            return []
+        try:
+            total = max(await asyncio.to_thread(self.store.count), 1)
+            counted = [(await asyncio.to_thread(self.store.count_text, kw), kw) for kw in keywords]
+        except Exception:  # noqa: BLE001 - without the full-text index the search is only semantic
+            log.exception("Could not count the keyword matches")
+            return []
+        limit = self.settings.keyword_max_share * total
+        return [kw for n, kw in sorted(counted, key=lambda x: x[0]) if 0 < n <= limit]
+
     async def retrieve(self, queries: list[str], boosts: list[dict[str, str]] | None = None,
                        keywords: list[str] | None = None) -> list[Hit]:
         """One search per query, fused (reciprocal rank fusion) with at most MAX_CHUNKS_PER_DOC per document.
 
         Each boost ({indexed field: value}, from the user's selectors) adds searches restricted to it with
         the first two queries: its documents come up without hiding the rest of the collection. Each
-        keyword adds a search, with the self-contained question, among the chunks that contain it.
+        keyword adds a search among the chunks that contain it, with the query that mentions it (or the
+        self-contained question); those searches get up to half of TOP_K.
         """
         if not queries:
             return []
         vectors = await asyncio.to_thread(self.embedder.embed_queries, queries)
         candidates = self.settings.top_k * 3
         excluded = self.settings.excluded_status_list
-        searches = [(v, None, None) for v in vectors]
-        searches += [(v, where, None) for where in boosts or [] for v in vectors[:2]]
-        searches += [(vectors[min(1, len(vectors) - 1)], None, kw) for kw in keywords or []]
-        results = [await asyncio.to_thread(self.store.search, v, candidates, excluded, where, text)
-                   for v, where, text in searches]
+        searches = [(v, None) for v in vectors] + [(v, where) for where in boosts or [] for v in vectors[:2]]
+        results = [await asyncio.to_thread(self.store.search, v, candidates, excluded, where)
+                   for v, where in searches]
+        keyword_results = []
+        for kw in keywords or []:
+            vector = vectors[query_prep.query_for_keyword(queries, kw)]
+            keyword_results.append(await asyncio.to_thread(self.store.search, vector, candidates, excluded,
+                                                           None, kw))
         return query_prep.fuse(results, self.settings.top_k, self.settings.min_score, self.settings.score_margin,
-                               self.settings.max_chunks_per_doc)
+                               self.settings.max_chunks_per_doc, priority=keyword_results,
+                               priority_slots=self.settings.top_k // 2)
 
     def _load_history(self, conversation_id: str) -> list[dict]:
         """Only complete question-answer pairs (a question whose answer failed is left out)."""
@@ -191,6 +209,7 @@ class ChatService:
         prepared = await self.prepare(llm, safe_question, safe_history, context)
         queries = prepared.search_queries(self.settings.search_queries_max)
         boosts = [{c["field"]: c["value"]} for c in context if c.get("field")]
+        prepared.keywords = await self.specific_keywords(prepared.keywords)
         docs = group_hits(await self.retrieve(queries, boosts, prepared.keywords), self.language)
         sources = [{k: d[k] for k in SOURCE_FIELDS} for d in docs]
         yield "sources", sources

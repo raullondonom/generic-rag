@@ -67,6 +67,8 @@ class Settings(BaseSettings):
     # semantic search restricted to the chunks that contain it (full-text index of Qdrant, in LANGUAGE)
     keyword_search: bool = True
     search_keywords_max: int = 3
+    # A keyword found in more than this share of the chunks is too generic to filter and is skipped
+    keyword_max_share: float = 0.02
     max_chunks_per_doc: int = 2  # so a single long document cannot fill the whole context
     min_score: float = 0.45
     score_margin: float = 0.12

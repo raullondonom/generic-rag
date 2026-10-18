@@ -9,6 +9,7 @@ the search runs with the question as typed.
 
 from __future__ import annotations
 
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
 
@@ -64,19 +65,39 @@ def from_model(data: dict | None, question: str, max_queries: int, max_keywords:
                     missing=items("missing", 5), ok=True)
 
 
+def _fold(text: str) -> str:
+    return unicodedata.normalize("NFKD", text.casefold()).encode("ascii", "ignore").decode()
+
+
+def query_for_keyword(queries: list[str], keyword: str) -> int:
+    """Index of the shortest topic query that mentions the keyword, else of the self-contained question.
+
+    `queries` is [original, self-contained, *topic queries], as `Prepared.search_queries` returns them.
+    """
+    k = _fold(keyword)
+    mentions = [i for i, q in enumerate(queries) if i >= 2 and k in _fold(q)]
+    if mentions:
+        return min(mentions, key=lambda i: len(queries[i]))
+    return min(1, len(queries) - 1)
+
+
 def fuse(result_lists: list[list[Hit]], top_k: int, min_score: float, score_margin: float,
-         max_per_doc: int, per_search: int = 1) -> list[Hit]:
+         max_per_doc: int, per_search: int = 1, priority: list[list[Hit]] | None = None,
+         priority_slots: int = 0) -> list[Hit]:
     """Reciprocal rank fusion of several searches, with at most `max_per_doc` chunks per document.
 
     Each search keeps only its hits above max(MIN_SCORE, its best score - SCORE_MARGIN), so a weak
-    query cannot bring noise; a chunk found by several queries ranks higher. The best `per_search`
-    hits of every search go in first, so a topic or keyword found by a single search is not crowded
-    out by the chunks the other searches share.
+    query cannot bring noise; a chunk found by several queries ranks higher. First come up to
+    `priority_slots` chunks of the `priority` searches (the keyword ones, most specific first), taken
+    in turns and one per document; then the best `per_search` hits of every other search, so a topic
+    found by a single search is not crowded out by the chunks the other searches share; the rest is
+    filled by fused score.
     """
     scores: dict[tuple, float] = {}
     best: dict[tuple, Hit] = {}
     kept: list[list[tuple]] = []
-    for hits in result_lists:
+    priority = priority or []
+    for hits in [*priority, *result_lists]:
         keys: list[tuple] = []
         if hits:
             cutoff = max(min_score, hits[0].score - score_margin)
@@ -90,15 +111,26 @@ def fuse(result_lists: list[list[Hit]], top_k: int, min_score: float, score_marg
                 keys.append(key)
         kept.append(keys)
     by_score = sorted(scores, key=scores.get, reverse=True)
-    first = [k for keys in kept for k in keys[:per_search]]
     per_doc: Counter = Counter()
     chosen: list[tuple] = []
-    for key in [*first, *by_score]:
-        if len(chosen) >= top_k:
-            break
-        if key in chosen or per_doc[key[0]] >= max_per_doc:
-            continue
+
+    def take(key: tuple) -> bool:
+        if len(chosen) >= top_k or key in chosen or per_doc[key[0]] >= max_per_doc:
+            return False
         per_doc[key[0]] += 1
         chosen.append(key)
+        return True
+
+    # Keyword searches in turns, one chunk per document, until their slots are used
+    queues = [list(keys) for keys in kept[:len(priority)]]
+    slots = min(priority_slots, top_k)
+    while len(chosen) < slots and any(queues):
+        for queue in queues:
+            while queue and per_doc[queue[0][0]]:
+                queue.pop(0)
+            if queue and len(chosen) < slots:
+                take(queue.pop(0))
+    for key in [k for keys in kept[len(priority):] for k in keys[:per_search]] + by_score:
+        take(key)
     # Final order by fused score (the most supported chunks first)
     return [best[k] for k in sorted(chosen, key=scores.get, reverse=True)]

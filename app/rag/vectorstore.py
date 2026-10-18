@@ -129,6 +129,13 @@ class VectorStore:
         result = self.client.facet(self.collection, key=field, limit=limit, exact=True)
         return sorted((str(h.value) for h in result.hits if str(h.value).strip()), key=str.casefold)
 
+    def count_text(self, text: str) -> int:
+        """Chunks that contain all the words of `text` (full-text index)."""
+        if not self.exists():
+            return 0
+        flt = qm.Filter(must=[qm.FieldCondition(key="text", match=qm.MatchText(text=text))])
+        return self.client.count(self.collection, count_filter=flt, exact=True).count
+
     def count(self) -> int:
         if not self.exists():
             return 0

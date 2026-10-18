@@ -44,6 +44,23 @@ def test_every_search_keeps_its_best_hit():
     assert out[0].payload["doc_id"] == "a"  # the most supported chunk still comes first
 
 
+def test_keyword_searches_get_priority_slots_one_chunk_per_document():
+    shared = [hit(0.9 - i / 100, d, c) for i, (d, c) in enumerate([("a", 0), ("a", 1), ("b", 0), ("b", 1), ("c", 0)])]
+    keyword = [hit(0.6, "k1", 0), hit(0.59, "k1", 1), hit(0.58, "k2", 0), hit(0.57, "k3", 0)]
+    out = query_prep.fuse([shared, list(shared)], top_k=5, min_score=0.3, score_margin=0.4, max_per_doc=2,
+                          priority=[keyword], priority_slots=3)
+    docs = [h.payload["doc_id"] for h in out]
+    assert {"k1", "k2", "k3"} <= set(docs) and docs.count("k1") == 1
+    assert len(out) == 5
+
+
+def test_keyword_search_uses_the_query_that_mentions_it():
+    queries = ["the question", "the self-contained question", "refund policy for delays", "delivery times"]
+    assert query_prep.query_for_keyword(queries, "Delivery") == 3
+    assert query_prep.query_for_keyword(queries, "annex") == 1
+    assert query_prep.query_for_keyword(["only one"], "x") == 0
+
+
 def test_keywords_are_deduplicated_and_capped():
     p = query_prep.from_model({"corrected": "q", "standalone": "q", "queries": [],
                                "keywords": ["Form", "form", "annex", "x" * 200, "four"], "missing": []}, "q", 3, 3)
