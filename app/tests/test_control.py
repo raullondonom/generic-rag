@@ -201,6 +201,46 @@ def test_registry_metadata_reaches_the_index(corpus, monkeypatch):
     assert unregistered["context"] == ["Carpeta: 03_case_law"]
 
 
+def test_ocr_text_replaces_its_scanned_pdf(corpus, monkeypatch):
+    monkeypatch.setattr("rag.ingest.folder_source.extract", lambda path, opts: [Section("pdf text layer")])
+    (corpus / "02_decrees" / "old.ocr.txt").write_text(
+        "Texto obtenido por OCR de: 02_decrees/old.pdf\nMétodo: OCR\n\n--- Página 1 de 2 ---\nArtículo uno\n"
+        "\n--- Página 2 de 2 ---\nArtículo dos\n", encoding="utf-8")
+    (corpus / "03_case_law" / "orphan.ocr.txt").write_text("texto suelto", encoding="utf-8")
+    indexer = FakeIndexer()
+    source = FolderSource(Settings(_env_file=None, docs_path=str(corpus), language="es"), indexer)
+    control = source.control()
+    sidecar = source.sidecar_suffix(control)
+    files = [rel for _, rel in source._files(control, sidecar)]
+    assert "02_decrees/old.ocr.txt" not in files  # consumed by its PDF
+    assert "03_case_law/orphan.ocr.txt" in files  # no PDF beside it: indexed as plain text
+    pdf = corpus / "02_decrees" / "old.pdf"
+    source._process(pdf, "02_decrees/old.pdf", document_metadata(control.lookup()["02_decrees/old.pdf"]), False, sidecar)
+    kw = indexer.indexed["folder:02_decrees/old.pdf"]
+    assert [(s.location, s.text) for s in kw["sections"]] == [("página 1", "Artículo uno"), ("página 2", "Artículo dos")]
+    assert kw["context"][-1].startswith("Texto obtenido por OCR")
+    assert "+ocr:" in kw["version"]
+    assert kw["location"] == "02_decrees/old.pdf"  # the citation opens the original PDF
+
+
+def test_ocr_sidecar_can_be_turned_off(corpus):
+    source = FolderSource(Settings(_env_file=None, docs_path=str(corpus), ocr_sidecar_suffix=""), FakeIndexer())
+    assert source.sidecar_suffix(None) == ""
+
+
+def test_assistant_notes(corpus):
+    config = json.loads((corpus / "_control" / "control_config.json").read_text(encoding="utf-8"))
+    config["assistant_notes_file"] = "notes.md"
+    (corpus / "_control" / "control_config.json").write_text(json.dumps(config), encoding="utf-8")
+    folder = ControlFolder.load(corpus, "_control")
+    assert folder.assistant_notes() == ""  # missing file: no notes
+    (corpus / "_control" / "notes.md").write_text("- La norma nacional prevalece.\n", encoding="utf-8")
+    assert folder.assistant_notes() == "- La norma nacional prevalece."
+    config["assistant_notes_file"] = "../01_laws/law_1.pdf"  # outside the control folder: ignored
+    (corpus / "_control" / "control_config.json").write_text(json.dumps(config), encoding="utf-8")
+    assert ControlFolder.load(corpus, "_control").assistant_notes() == ""
+
+
 def test_context_lines_without_registry():
     assert context_lines("guide.md", {}, "en") == []
     assert context_lines("a/b/c.pdf", {"status": "in_force"}, "en") == ["Folder: a/b", "Status: in_force"]

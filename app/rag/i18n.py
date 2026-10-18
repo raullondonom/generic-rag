@@ -64,6 +64,9 @@ TEXTS: dict[str, dict[str, str]] = {
         "ctx_type": "Type",
         "ctx_status": "Status",
         "ctx_valid_until": "Valid until",
+        "ctx_ocr": "Text obtained by OCR from a scanned PDF: it may contain recognition errors",
+        "corpus_notes": ("Notes from the administrator of this document collection. Follow them in every "
+                         "answer; they take precedence over what the documents say:"),
     },
     "es": {
         "no_context": (
@@ -115,6 +118,9 @@ TEXTS: dict[str, dict[str, str]] = {
         "ctx_type": "Tipo",
         "ctx_status": "Estado",
         "ctx_valid_until": "Vigente hasta",
+        "ctx_ocr": "Texto obtenido por OCR de un PDF escaneado: puede tener errores de reconocimiento",
+        "corpus_notes": ("Notas del administrador de esta colección de documentos. Síguelas en todas las "
+                         "respuestas; prevalecen sobre lo que digan los documentos:"),
     },
 }
 

@@ -58,8 +58,10 @@ def group_hits(hits: list[Hit], language: str = "en") -> list[dict]:
 
 class ChatService:
     def __init__(self, settings: Settings, embedder: Embedder, store: VectorStore, llms: dict[str, LLM],
-                 conversations, redactor: Redactor | None = None):
+                 conversations, redactor: Redactor | None = None, notes=None):
+        """`notes`: callable returning the collection administrator's instructions (control folder), or None."""
         self.settings = settings
+        self.notes = notes
         self.language = settings.language
         self.embedder = embedder
         self.store = store
@@ -106,6 +108,17 @@ class ChatService:
             if prev["role"] == "user" and cur["role"] == "assistant":
                 history += [prev, cur]
         return history[-2 * self.settings.history_turns:]
+
+    def system(self) -> str:
+        """System prompt plus the notes of the collection's administrator, if any (trusted operator text)."""
+        notes = ""
+        if self.notes:
+            try:
+                notes = self.notes() or ""
+            except Exception:  # noqa: BLE001 - notes are optional
+                log.exception("Could not read the assistant notes")
+        base = system_prompt(self.language)
+        return f"{base}\n\n{t(self.language, 'corpus_notes')}\n{notes}" if notes else base
 
     def _clean(self, llm: LLM, text: str) -> str:
         """What leaves the machine (Claude) is redacted; documents were already redacted when indexed."""
@@ -156,7 +169,7 @@ class ChatService:
         user_message = build_user_message(safe_question, docs, self.language)
         messages = [*safe_history, {"role": "user", "content": user_message}]
         try:
-            async for text in llm.stream(system_prompt(self.language), messages):
+            async for text in llm.stream(await asyncio.to_thread(self.system), messages):
                 answer += text
                 yield "token", text
         except (Exception, asyncio.CancelledError) as e:

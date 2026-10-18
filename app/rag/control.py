@@ -94,6 +94,21 @@ class ControlFolder:
         return cls(docs_root=docs_root, path=path, config=config)
 
     @property
+    def ocr_sidecar_suffix(self) -> str:
+        return self.config.get("ocr_sidecar_suffix", "")
+
+    def assistant_notes(self, max_chars: int = 6000) -> str:
+        """Instructions for the assistant from the collection's administrator (assistant_notes_file)."""
+        name = self.config.get("assistant_notes_file")
+        if not name:
+            return ""
+        path = (self.path / name).resolve()
+        if not path.is_relative_to(self.path.resolve()) or not path.is_file():
+            log.warning("assistant_notes_file not found in the control folder: %s", name)
+            return ""
+        return path.read_text(encoding="utf-8", errors="replace").strip()[:max_chars]
+
+    @property
     def excluded_dirs(self) -> set[str]:
         return {d.lower() for d in self.config["excluded_dirs"]} | {self.path.name.lower()}
 

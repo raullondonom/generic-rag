@@ -58,7 +58,7 @@ class Services:
         self.feedback = FeedbackStore(self.db)
         self.control = ControlStore(self.db)
         self.chat = ChatService(settings, self.embedder, self.store, build_llms(settings, self.spend),
-                                self.conversations)
+                                self.conversations, notes=self.assistant_notes)
         self.scheduler = BackgroundScheduler(timezone="UTC")
 
     def prepare_index(self) -> None:
@@ -88,6 +88,11 @@ class Services:
     def sync_confluence(self, full: bool = False) -> None:
         if self._embeddings_ready("confluence", lambda: self.sync_confluence(full)):
             self.confluence.sync(full=full)
+
+    @staticmethod
+    def assistant_notes() -> str:
+        folder = ControlFolder.load(settings.docs_path, settings.control_dir)
+        return folder.assistant_notes() if folder else ""
 
     def check_sources(self, online: bool | None = None) -> None:
         """Daily review of the source registries (no AI, nothing downloaded or reindexed)."""

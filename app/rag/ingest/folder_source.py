@@ -11,13 +11,14 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import threading
 from pathlib import Path, PurePosixPath
 
 from ..config import Settings
 from ..control import ControlFolder, document_metadata, metadata_version, norm_path
 from ..i18n import t
-from .loaders import LoaderOptions, UnsupportedFormat, extract
+from .loaders import LoaderOptions, Section, UnsupportedFormat, clean_text, decode_bytes, extract
 from .pipeline import Indexer
 
 log = logging.getLogger(__name__)
@@ -30,6 +31,22 @@ def sha256_file(path: Path) -> str:
         for block in iter(lambda: f.read(1024 * 1024), b""):
             h.update(block)
     return h.hexdigest()
+
+
+PAGE_MARKER = re.compile(r"^--- (?:p[aá]gina|page) (\d+)(?: (?:de|of) \d+)? ---[ \t]*$", re.IGNORECASE | re.MULTILINE)
+
+
+def ocr_sections(text: str, language: str) -> list[Section]:
+    """OCR text split by its page markers ("--- Página 3 de 10 ---"); the header before the first one is dropped."""
+    parts = PAGE_MARKER.split(text)
+    if len(parts) == 1:
+        return [Section(clean_text(text))] if text.strip() else []
+    sections = []
+    for i in range(1, len(parts) - 1, 2):
+        body = clean_text(parts[i + 1])
+        if body:
+            sections.append(Section(body, t(language, "page", n=int(parts[i]))))
+    return sections
 
 
 def context_lines(rel: str, meta: dict, language: str) -> list[str]:
@@ -69,13 +86,22 @@ class FolderSource:
     def control(self) -> ControlFolder | None:
         return ControlFolder.load(self.root, self.settings.control_dir)
 
-    def _files(self, control: ControlFolder | None = None):
+    def sidecar_suffix(self, control: ControlFolder | None) -> str:
+        if control and "ocr_sidecar_suffix" in control.config:
+            return control.ocr_sidecar_suffix
+        return self.settings.ocr_sidecar_suffix
+
+    def _files(self, control: ControlFolder | None = None, sidecar: str = ""):
         excluded = control.excluded_dirs if control else set()
         for path in self.root.rglob("*"):
             rel = path.relative_to(self.root)
             if any(part.startswith(self.prefixes) for part in rel.parts):
                 continue
             if excluded & {p.lower() for p in rel.parts[:-1]}:
+                continue
+            # The OCR text of a scanned PDF is indexed together with its PDF, not on its own
+            if sidecar and path.name.lower().endswith(sidecar.lower()) \
+                    and path.with_name(path.name[:-len(sidecar)] + ".pdf").is_file():
                 continue
             if path.is_file():
                 yield path, rel.as_posix()
@@ -89,28 +115,41 @@ class FolderSource:
         self._fingerprints[rel] = (st.st_mtime, st.st_size, digest)
         return digest
 
-    def _process(self, path: Path, rel: str, info: dict, full: bool) -> int:
+    def _sections(self, path: Path, ocr_text: Path | None, context: list[str]) -> list[Section]:
+        if ocr_text is None:
+            return extract(path, self.opts)
+        # Scanned PDF: its OCR text is indexed instead, and the citation still opens the PDF
+        context.append(t(self.lang, "ctx_ocr"))
+        return ocr_sections(decode_bytes(ocr_text.read_bytes()), self.lang)
+
+    def _process(self, path: Path, rel: str, info: dict, full: bool, sidecar: str = "") -> int:
         """Indexes one file if it is new or changed. Returns 1 if it was (re)processed."""
         doc_id = f"{SOURCE}:{rel}"
         meta = dict(source=SOURCE, title=info.get("title") or path.name, location=rel, container=str(Path(rel).parent))
         version = "error"
+        ocr_text = path.with_name(path.stem + sidecar) if sidecar and path.suffix.lower() == ".pdf" else None
+        if ocr_text is not None and not ocr_text.is_file():
+            ocr_text = None
         try:
             size = path.stat().st_size
-            if size > self.settings.max_file_mb * 1024 * 1024:
+            if size > self.settings.max_file_mb * 1024 * 1024 and ocr_text is None:
                 version = f"size:{size}"
                 if full or not self.indexer.is_current(doc_id, version):
                     self.indexer.mark(doc_id, version=version, status="unsupported",
                                       error=t(self.lang, "too_big", mb=self.settings.max_file_mb), **meta)
                 return 0
             version = self._version(path, rel)
+            if ocr_text is not None:
+                version += "+ocr:" + self._version(ocr_text, rel + sidecar)[:16]
             if info:
                 version += ":" + metadata_version(info)  # a registry edit reindexes this document only
             if not full and self.indexer.is_current(doc_id, version):
                 return 0
-            sections = extract(path, self.opts)
+            context = context_lines(rel, info, self.lang)
+            sections = self._sections(path, ocr_text, context)
             extra = {k: info[k] for k in ("status", "valid_until", "jurisdiction") if k in info}
             self.indexer.index(doc_id, url=info.get("url", ""), version=version, sections=sections,
-                               context=context_lines(rel, info, self.lang), extra=extra, **meta)
+                               context=context, extra=extra, **meta)
         except UnsupportedFormat as e:
             self.indexer.mark(doc_id, version=version, status="unsupported", error=str(e), **meta)
         except Exception as e:  # noqa: BLE001 - a broken file must not stop ingestion
@@ -130,11 +169,12 @@ class FolderSource:
                 return msg
             control = self.control()
             registry = control.lookup() if control else {}
+            sidecar = self.sidecar_suffix(control)
             seen: set[str] = set()
             changed = 0
-            for path, rel in self._files(control):
+            for path, rel in self._files(control, sidecar):
                 seen.add(f"{SOURCE}:{rel}")
-                changed += self._process(path, rel, document_metadata(registry.get(norm_path(rel))), full)
+                changed += self._process(path, rel, document_metadata(registry.get(norm_path(rel))), full, sidecar)
 
             removed = state.ids_for_source(SOURCE) - seen
             for doc_id in removed:

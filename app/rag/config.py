@@ -73,6 +73,9 @@ class Settings(BaseSettings):
     ocr_langs: str = "eng+spa"
     # Files or folders whose name starts with one of these are never indexed ("_" = metadata, archives)
     ignore_prefixes: str = ".,_,~$"
+    # OCR text next to a scanned PDF ("<name>.ocr.txt" beside "<name>.pdf") is indexed instead of the PDF.
+    # The control folder's "ocr_sidecar_suffix" overrides it; empty = off
+    ocr_sidecar_suffix: str = ".ocr.txt"
 
     # Source control folder inside the documents folder (registries of where each document came from)
     control_dir: str = "_control"

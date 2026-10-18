@@ -118,6 +118,18 @@ def test_prompts_follow_the_language():
     assert next(d for k, d in events if k == "sources")[0]["source_label"] == "Carpeta local"
 
 
+def test_collection_notes_are_added_to_the_system_prompt():
+    service, llm, _ = make([hit(0.9)])
+    service.notes = lambda: "- National law prevails over local rules."
+    run(service, "How is it deployed?")
+    system = llm.calls[0][0]
+    assert system.endswith("- National law prevails over local rules.")
+    assert t("en", "corpus_notes") in system
+    service.notes = lambda: ""
+    run(service, "How is it deployed?")
+    assert t("en", "corpus_notes") not in llm.calls[1][0]
+
+
 def test_greeting_short_circuit():
     service, llm, _ = make([hit(0.9)])
     events = run(service, "hello")

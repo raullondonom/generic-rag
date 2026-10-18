@@ -175,14 +175,16 @@ Any folder layout works, but these conventions make retrieval and maintenance be
 
 | File | Content |
 |---|---|
-| `control_config.json` | Registry file patterns, CSV delimiter, `column_aliases` (to read registries with other column names, e.g. in Spanish), review periods, expiry warning window, `document_extensions`, `excluded_dirs` |
+| `control_config.json` | Registry file patterns, CSV delimiter, `column_aliases` (to read registries with other column names, e.g. in Spanish), review periods, expiry warning window, `document_extensions`, `excluded_dirs`, `assistant_notes_file`, `ocr_sidecar_suffix` |
 | `sources_*.csv` | One row per document (`file` relative to the documents root) with `title`, `doc_type`, `number`, `year`, `issuer`, `scope`, `jurisdiction`, `topic`, `download_url`, `reference_url`, `method`, `issue_date`, `retrieved_date`, `status`, `valid_until`, `review_frequency`, `change_check`, `notes`. A row with an empty `file` records a place where nothing was found. |
 
 What the app does with it:
 
 1. **Enriches every document** with its registry row: the registry title instead of the file name, and jurisdiction, issuer, type, status and valid-until date in the chunk context. Sources show the status and link to both the local file and the official `reference_url`. Editing a row reindexes only that document.
-2. **Leaves repealed documents out of the search** (`EXCLUDE_STATUSES`, matched against the lowercase `status`). Folders listed in `excluded_dirs` are never indexed.
-3. **Reviews the sources every day** (`CONTROL_CHECK_TIME`, 16:00 by default; empty = only from the side panel), without AI and **without downloading or reindexing anything**. It reports expired and soon-to-expire documents, reviews due by `review_frequency`, registered files missing on disk, places with no document, documents with no registry row, unreachable URLs and **remote sources whose content changed** (SHA-256 of the file, or of the visible text for HTML pages; ETag / Last-Modified avoid downloading unchanged files; the first check only stores fingerprints). The documents folder stays read only: the review state lives in Postgres. The side panel shows the result; the full list is at `GET /api/control`, and `docker compose exec rag-app python -m rag.control check [--offline]` runs it from the command line.
+2. **Follows the collection's own instructions**: the file named in `assistant_notes_file` (inside the control folder) is added to the assistant's system prompt, e.g. "national law prevails over local rules". It is trusted operator text and it is not indexed.
+3. **Indexes OCR text instead of scanned PDFs**: a `<name>.ocr.txt` next to `<name>.pdf` (`OCR_SIDECAR_SUFFIX`, or `ocr_sidecar_suffix` in the config) is indexed in its place, split by its `--- Page n of N ---` markers, with the PDF's registry row; citations open the PDF.
+4. **Leaves repealed documents out of the search** (`EXCLUDE_STATUSES`, matched against the lowercase `status`). Folders listed in `excluded_dirs` are never indexed.
+5. **Reviews the sources every day** (`CONTROL_CHECK_TIME`, 16:00 by default; empty = only from the side panel), without AI and **without downloading or reindexing anything**. It reports expired and soon-to-expire documents, reviews due by `review_frequency`, registered files missing on disk, places with no document, documents with no registry row, unreachable URLs and **remote sources whose content changed** (SHA-256 of the file, or of the visible text for HTML pages; ETag / Last-Modified avoid downloading unchanged files; the first check only stores fingerprints). The documents folder stays read only: the review state lives in Postgres. The side panel shows the result; the full list is at `GET /api/control`, and `docker compose exec rag-app python -m rag.control check [--offline]` runs it from the command line.
 
 ## Several instances on one machine
 
