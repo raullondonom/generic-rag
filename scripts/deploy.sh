@@ -47,13 +47,13 @@ leave_other_mode() {
     if [ -n "$others" ]; then
       echo "Removing the mini services (rag-app, qdrant, embeddings); their data stays in the volumes."
       echo "The 3 Qdrant nodes of HA start empty: see \"Switching from basic to HA\" in the README."
-      docker compose -f docker-compose.yml rm -sf "${MINI_ONLY[@]}" >/dev/null
+      docker compose -f docker-compose.yml rm -sf "${MINI_ONLY[@]}" >/dev/null 2>&1
     fi
   else
     others="$(docker compose -f docker-compose.yml -f docker-compose.ha.yml ps -a -q "${HA_ONLY[@]}" 2>/dev/null || true)"
     if [ -n "$others" ]; then
       echo "Removing the HA services; their data stays in the volumes."
-      docker compose -f docker-compose.yml -f docker-compose.ha.yml rm -sf "${HA_ONLY[@]}" >/dev/null
+      docker compose -f docker-compose.yml -f docker-compose.ha.yml rm -sf "${HA_ONLY[@]}" >/dev/null 2>&1
     fi
   fi
 }
