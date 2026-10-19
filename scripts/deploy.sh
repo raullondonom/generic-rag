@@ -100,6 +100,13 @@ k8s_mode() {
           done
           if [ "$stopped" = 1 ]; then
             echo "Starting kind cluster '$CLUSTER' again..."
+            # Right after `docker start` the API server refuses connections for a few seconds, and
+            # `kubectl wait` fails at once instead of waiting
+            local i
+            for i in $(seq 1 60); do
+              kubectl --context "kind-$CLUSTER" get --raw /readyz >/dev/null 2>&1 && break
+              sleep 2
+            done
             kubectl --context "kind-$CLUSTER" wait --for=condition=Ready node --all --timeout=180s >/dev/null
           fi
         fi
