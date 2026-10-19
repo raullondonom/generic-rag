@@ -1,0 +1,19 @@
+# NVIDIA GPU for the embeddings nodes of docker-compose.ha.yml (docker-compose.gpu.yml covers Ollama and
+# the single-node "embeddings" service, which HA replaces). Combined by ./scripts/compose.sh with GPU=nvidia:
+#   docker compose -f docker-compose.yml -f docker-compose.ha.yml -f docker-compose.gpu.yml \
+#     -f docker-compose.ha.gpu.yml up -d
+# Every node takes about 1.5 GB of VRAM on top of the local model: with 8 GB, keep two nodes.
+x-gpu-embeddings: &gpu-embeddings
+  image: ${TEI_GPU_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:89-1.9}
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+
+services:
+  embeddings-1: *gpu-embeddings
+  embeddings-2: *gpu-embeddings
+  embeddings-3: *gpu-embeddings
