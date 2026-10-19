@@ -9,10 +9,6 @@
 #   DOCS_HOST_PATH documents mounted into a kind cluster (default ./documents, as in Docker Compose)
 #   GPU            nvidia | amd | none (auto means none: the GPU of a cluster is not detected from here)
 
-# Git Bash rewrites arguments that look like paths (/tmp/x becomes C:/Users/.../Temp/x), which breaks the
-# paths inside a pod given to kubectl exec and kubectl cp. No effect outside Git Bash.
-export MSYS_NO_PATHCONV=1
-
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 ENV_FILE="${ENV_FILE:-$REPO_ROOT/.env}"
 

@@ -68,6 +68,7 @@ environment wins over it. The defaults are neutral, so nothing has to be set for
 | `DOCS_HOST_PATH` | `./documents` | kind: folder mounted read-only into the node when the cluster is created |
 | `GPU` | `none` (`auto` = `none`) | `nvidia`: Ollama and embeddings on GPU (`TEI_GPU_IMAGE` picks the TEI tag); `amd`: Ollama with ROCm |
 | `K8S_CONFIG_FROM_ENV` | `true` | `false` applies the manifests' values only |
+| `K8S_EMBEDDINGS_CPU` / `K8S_EMBEDDINGS_CPU_LIMIT` / `K8S_EMBEDDINGS_MEMORY` | overlay | Size of the embeddings pod for a small node (the `local` overlay asks for 4 CPU, which a 4 vCPU machine cannot give besides Kubernetes itself), e.g. `1500m` / `3` / `5Gi`; `RAYON_NUM_THREADS` follows the CPU limit |
 
 `deploy.sh` renders the overlay through `deploy/k8s/.generated/` (gitignored, written again on every
 deploy). Every key of `base/configmap.yaml` that `.env` defines replaces the manifest's value

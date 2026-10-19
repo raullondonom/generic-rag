@@ -12,6 +12,10 @@ set -euo pipefail
 
 # shellcheck source=env.sh
 . "$(dirname "${BASH_SOURCE[0]}")/env.sh"
+# Git Bash rewrites arguments that look like paths (/tmp/x becomes C:/Users/.../Temp/x), which breaks the
+# paths inside the pods given to kubectl exec and cp. Local files are copied by relative name (copy_in), so
+# nothing here needs the rewrite. No effect outside Git Bash.
+export MSYS_NO_PATHCONV=1
 [ $# -eq 2 ] || { echo "Usage: $0 <postgres.dump> <qdrant.snapshot>" >&2; exit 1; }
 DUMP="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
 SNAPSHOT="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"
