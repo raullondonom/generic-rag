@@ -294,7 +294,18 @@ backup as the compose deployment.
 
 The dump and the snapshot must come from the same backup, and the `documents` volume must
 contain the same corpus; otherwise the scheduler reconciles the index and removes what it
-does not see.
+does not see. Set `FOLDER_SCAN_INTERVAL=0` in `.env` and deploy first, then:
+
+```bash
+./deploy/k8s/scripts/restore.sh postgres.dump qdrant.snapshot
+```
+
+It stops the scheduler, restores Postgres, checks that the application uses the backup's collection
+(otherwise the scheduler's first start would drop it, so it stops there), uploads the snapshot,
+starts the scheduler and compares the chunks in Postgres with the points in Qdrant. Every copy into a
+pod is checked with `md5sum`. Measured: 14,145 chunks (a 2.9 MB dump and a 191 MB snapshot) in 19 s.
+
+The same steps by hand:
 
 ```bash
 # 1. Stop indexing while the data is replaced.
