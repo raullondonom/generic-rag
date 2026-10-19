@@ -119,8 +119,9 @@ services:
         limits:
           memory: 3g
 
-  # Public tunnel for testing (optional): docker compose --profile ngrok up -d
-  # Protected with user/password (NGROK_BASIC_AUTH). Public URL: http://localhost:4040
+  # Public tunnel for testing (optional): ./scripts/deploy.sh tunnel up (or docker compose --profile ngrok up -d)
+  # Protected with user/password (NGROK_BASIC_AUTH). Public URL: ./scripts/deploy.sh tunnel url, or
+  # http://localhost:4040. docker-compose.ha.yml points it at the edge instead of rag-app.
   ngrok:
     image: ngrok/ngrok:3.39.11-alpine
     profiles: ["ngrok"]
@@ -131,6 +132,7 @@ services:
       NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:-}
       NGROK_BASIC_AUTH: ${NGROK_BASIC_AUTH:-}
       NGROK_DOMAIN: ${NGROK_DOMAIN:-}
+      NGROK_UPSTREAM: rag-app:8000
     entrypoint: ["/bin/sh", "-c"]
     # Writes the config (dashboard on 0.0.0.0:4040) and the user/password traffic policy.
     # It never opens the tunnel without protection.
@@ -143,7 +145,7 @@ services:
         esac
         printf 'version: 3\nagent:\n  web_addr: 0.0.0.0:4040\n' > /tmp/ngrok.yml
         printf 'on_http_request:\n  - actions:\n      - type: basic-auth\n        config:\n          credentials:\n            - "%s"\n' "$$NGROK_BASIC_AUTH" > /tmp/policy.yml
-        exec ngrok http rag-app:8000 --config /tmp/ngrok.yml --traffic-policy-file /tmp/policy.yml $${NGROK_DOMAIN:+--url $$NGROK_DOMAIN} --log stdout
+        exec ngrok http "$$NGROK_UPSTREAM" --config /tmp/ngrok.yml --traffic-policy-file /tmp/policy.yml $${NGROK_DOMAIN:+--url $$NGROK_DOMAIN} --log stdout
     ports:
       - "127.0.0.1:${NGROK_PANEL_PORT:-4040}:4040"
 

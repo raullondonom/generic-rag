@@ -353,17 +353,28 @@ Typical uses: a `not_found` answer often means a document is missing from the in
 
 ## External access with ngrok (testing)
 
-The end-user page has no login, so the ngrok tunnel is protected with a user and password (`NGROK_BASIC_AUTH`). The administration panel also needs `ADMIN_TOKEN` to open through the tunnel.
+A public URL for any of the three versions, to try the assistant from a phone or share it for a test. The end-user page has no login, so the tunnel is always protected with a user and password (`NGROK_BASIC_AUTH`); the administration panel also needs `ADMIN_TOKEN` through it.
 
-1. Create the `NGROK_AUTHTOKEN` environment variable with your authtoken (dashboard.ngrok.com → *Your Authtoken*).
-2. Set `NGROK_BASIC_AUTH=user:password` in `.env`. The password must have at least 8 characters.
-3. Start the tunnel:
+1. Create the `NGROK_AUTHTOKEN` environment variable with your authtoken (dashboard.ngrok.com → *Your Authtoken*), or set it in `.env`.
+2. Set `NGROK_BASIC_AUTH=user:password` in `.env`. The password must have at least 8 characters, or the tunnel does not open. `NGROK_DOMAIN` keeps the same URL between runs (a free static domain of your ngrok account).
+3. With the deployment running:
    ```bash
-   docker compose --profile ngrok up -d
+   ./scripts/deploy.sh tunnel up     # prints the public URL
+   ./scripts/deploy.sh tunnel url    # prints it again
+   ./scripts/deploy.sh tunnel down   # closes it
    ```
-4. Find the public URL at <http://localhost:4040> or with `docker compose logs ngrok`.
 
-To close it, run `docker compose stop ngrok`. Keep in mind that anyone who gets in through ngrok can query the indexed documents and spend AI credits.
+| Version | What runs | The tunnel points at |
+|---|---|---|
+| mini | the `ngrok` service of `docker-compose.yml` (profile `ngrok`) | `rag-app:8000` |
+| ha | the same service, redirected by `docker-compose.ha.yml` | the `edge` (nginx), like any visitor |
+| k8s | the `ngrok` Deployment of `deploy/k8s/optional/ngrok.yaml` and its `ngrok` Secret, in the namespace | the `nginx` Service (works on kind and on a managed cluster) |
+
+- Switching between mini and HA removes the tunnel (its target is gone): run `tunnel up` again.
+- In HA and Kubernetes every request reaches nginx from the tunnel's IP, so the per-IP limits are shared by everyone who comes through it.
+- Without the script, mini only: `docker compose --profile ngrok up -d`, the URL at <http://localhost:4040> (`NGROK_PANEL_PORT`).
+
+Keep in mind that anyone who gets in through ngrok can query the indexed documents and spend AI credits.
 
 ## REST API
 

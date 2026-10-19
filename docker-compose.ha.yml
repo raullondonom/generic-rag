@@ -290,6 +290,15 @@ services:
       timeout: 3s
       retries: 5
 
+  # ---- public tunnel for tests (profile "ngrok", ./scripts/deploy.sh tunnel up): through the edge, like any
+  # visitor. Every request then comes from the ngrok container's IP, so the edge's per-IP limits are shared.
+  ngrok:
+    environment:
+      NGROK_UPSTREAM: edge:8080
+    depends_on: !override
+      edge:
+        condition: service_started
+
 volumes:
   redis_queue_data:
   qdrant_1_data:

@@ -1,0 +1,46 @@
+# Public tunnel for tests (optional): ngrok in the cluster, in front of the nginx Service, so it works the
+# same on kind and on a managed cluster. Applied by `./scripts/deploy.sh tunnel up` (DEPLOY_MODE=k8s), which
+# first creates the `ngrok` Secret from NGROK_AUTHTOKEN, NGROK_BASIC_AUTH and NGROK_DOMAIN (.env or the
+# environment). Like in Docker Compose, it never opens the tunnel without a user and password.
+# Every request reaches nginx from this pod's IP, so nginx's per-IP limits are shared by all visitors.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ngrok
+  labels:
+    app: ngrok
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ngrok
+  template:
+    metadata:
+      labels:
+        app: ngrok
+    spec:
+      containers:
+        - name: ngrok
+          image: ngrok/ngrok:3.39.11-alpine
+          command: ["/bin/sh", "-c"]
+          # Writes the config (dashboard on 127.0.0.1:4040, read by `tunnel url`) and the basic-auth policy
+          args:
+            - |
+              [ -n "$NGROK_AUTHTOKEN" ] || { echo "ERROR: NGROK_AUTHTOKEN is empty"; exit 1; }
+              case "$NGROK_BASIC_AUTH" in
+                *:????????*) ;;
+                *) echo "ERROR: NGROK_BASIC_AUTH must be user:password (at least 8 characters)"; exit 1 ;;
+              esac
+              printf 'version: 3\nagent:\n  web_addr: 127.0.0.1:4040\n' > /tmp/ngrok.yml
+              printf 'on_http_request:\n  - actions:\n      - type: basic-auth\n        config:\n          credentials:\n            - "%s"\n' "$NGROK_BASIC_AUTH" > /tmp/policy.yml
+              exec ngrok http http://nginx:80 --config /tmp/ngrok.yml --traffic-policy-file /tmp/policy.yml ${NGROK_DOMAIN:+--url $NGROK_DOMAIN} --log stdout
+          envFrom:
+            - secretRef:
+                name: ngrok
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 500m
+              memory: 128Mi
