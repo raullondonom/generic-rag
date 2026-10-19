@@ -88,45 +88,60 @@ docker compose logs -f ollama-init   # the first start downloads the models; wai
 
 Optional:
 
-- **NVIDIA GPU**: uncomment `COMPOSE_PATH_SEPARATOR` and `COMPOSE_FILE` in `.env`, set `TEI_GPU_IMAGE` for your GPU architecture, and run `docker compose up -d`.
-- **Automatic GPU detection (Linux)**: run `./scripts/compose.sh up -d` instead of `docker compose up -d`. It uses NVIDIA (`docker-compose.gpu.yml`) if `nvidia-smi` and the NVIDIA runtime work, AMD/ROCm (`docker-compose.amd.yml`) if `/dev/kfd` is accessible, and the CPU otherwise. `GPU=nvidia|amd|none` forces a choice; `./scripts/compose.sh --detect` only prints it. With AMD only Ollama uses the GPU (the embeddings service has no ROCm image and stays on the CPU); with several GPUs set `HIP_VISIBLE_DEVICES` in `.env`.
+- **GPU, high availability or Kubernetes**: set `DEPLOY_MODE` and `GPU` in `.env` and run `./scripts/deploy.sh up` (see [Deployment versions](#deployment-versions-mini-ha-and-kubernetes)). With NVIDIA set `TEI_GPU_IMAGE` for your GPU architecture. With AMD only Ollama uses the GPU (the embeddings service has no ROCm image and stays on the CPU); with several GPUs set `HIP_VISIBLE_DEVICES` in `.env`.
 - **Claude or DeepSeek**: set the API key (see [Secrets](#secrets)). The remote model then answers and Ollama is not started. To keep both and choose in the UI: `COMPOSE_PROFILES=ollama,ollama-with-claude` and `OLLAMA_WITH_CLAUDE=true`.
 - **Confluence**: set the `CONFLUENCE_*` variables in `.env` (see below). It syncs once a day (`CONFLUENCE_SYNC_TIME`, 16:00 by default) and on demand from the administration panel.
 - **Only a remote model, no local model**: remove `ollama` from `COMPOSE_PROFILES` and, if wanted, leave `OLLAMA_URL` empty.
 - **Spanish UI and prompts**: `LANGUAGE=es`.
 
-## Start, stop and update (basic and high availability)
+## Deployment versions: mini, HA and Kubernetes
 
-Two ways to run the same application. Use **one at a time**: both use the same Postgres volume and the same service names, so stop one before starting the other. Conversations and ratings are kept when you switch; the vector index is not shared (see the note on switching).
-
-| | Basic (default) | High availability |
-|---|---|---|
-| Compose files | `docker-compose.yml` | `docker-compose.yml` + `docker-compose.ha.yml` |
-| Entry point | <http://localhost:8000> | <http://localhost:8080> (`HA_PORT`) |
-| Services | app, Postgres, Qdrant, embeddings, Ollama | Nginx, 2 API, workers, scheduler, queue and cache (Redis), Qdrant ×3, embeddings ×2-3, Postgres |
-| RAM (CPU only, without the local model) | about 3 GB (measured) | about 8-9 GB (estimated, not measured under load) |
-| GPU | `./scripts/compose.sh` detects it | Embeddings nodes run on the CPU (`docker-compose.gpu.yml` targets the `embeddings` service, which HA replaces); not tested with a GPU |
-
-**Basic**
+The same application in three shapes. Pick one in `.env` and start it with one command:
 
 ```bash
-docker compose up -d --build            # start (or ./scripts/compose.sh up -d to detect the GPU)
-docker compose ps                       # state of every service
-docker compose logs -f rag-app          # logs
-docker compose down                     # stop; keeps the data (volumes)
+# .env
+DEPLOY_MODE=mini      # mini | ha | k8s
+GPU=auto              # auto | nvidia | amd | none
 ```
 
-**High availability**
+```bash
+./scripts/deploy.sh up              # start the version of DEPLOY_MODE (builds the image)
+./scripts/deploy.sh status          # state of every service
+./scripts/deploy.sh logs [service]  # rag-app, worker, scheduler, edge, qdrant-1... (k8s: api, scheduler...)
+./scripts/deploy.sh restart [service]
+./scripts/deploy.sh down            # stop; keeps the data
+DEPLOY_MODE=ha ./scripts/deploy.sh up   # the environment wins over .env
+```
+
+On Windows run it from Git Bash (it comes with Git for Windows).
+
+| | Mini (default) | High availability | Kubernetes |
+|---|---|---|---|
+| `DEPLOY_MODE` | `mini` | `ha` | `k8s` |
+| Files | `docker-compose.yml` | `docker-compose.yml` + `docker-compose.ha.yml` | `deploy/k8s/` (Kustomize, overlay `K8S_OVERLAY`) |
+| Entry point | <http://localhost:8000> (`APP_PORT`) | <http://localhost:8080> (`HA_PORT`) | kind: <http://localhost:8081> (`K8S_HOST_PORT`); cloud: the `nginx` LoadBalancer |
+| Services | app, Postgres, Qdrant, embeddings, Ollama | Nginx, 2 API, workers, scheduler, queue and cache (Redis), Qdrant ×3, embeddings ×2-3, Postgres, Ollama | Nginx ×2, API ×2-6 (HPA), scheduler, Postgres, Qdrant, embeddings, Ollama |
+| RAM (CPU only, without the local model) | about 3 GB (measured) | about 8-9 GB (estimated, not measured under load) | about 8 GB of requests |
+| GPU `nvidia` | Ollama and embeddings (`docker-compose.gpu.yml`) | Ollama and the embeddings nodes (`+ docker-compose.ha.gpu.yml`) | Ollama and embeddings (patches in `deploy/k8s/optional/`, needs the NVIDIA device plugin) |
+| GPU `amd` | Ollama (`docker-compose.amd.yml`, Linux) | Ollama | Ollama (ROCm image, needs the AMD device plugin) |
+| For | one server, tests | one server that must keep answering when a node fails | a cluster: autoscaling, several nodes |
+
+- **mini** and **ha** share the Postgres volume, the model volumes and the service names: `up` in one of them removes the containers of the other (the volumes stay), so they never answer at the same time. Conversations and ratings are kept when you switch; the vector index is not shared (see the note on switching).
+- **k8s** creates the kind cluster the first time (`K8S_OVERLAY=local`, documents from `DOCS_HOST_PATH`) and applies the overlay with the namespace, the image and the application settings of `.env`. `down` stops the kind node (the data stays inside it). Details: [deploy/k8s/README.md](deploy/k8s/README.md).
+- `GPU=auto` uses NVIDIA if `nvidia-smi` and the Docker NVIDIA runtime work, AMD/ROCm if `/dev/kfd` is accessible (Linux), the CPU otherwise; `./scripts/compose.sh --detect` prints the choice. In k8s `auto` means `none`.
+- Without the script, the same with Docker Compose:
 
 ```bash
+docker compose up -d --build                                    # mini (CPU)
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build    # mini, NVIDIA
 HA="-f docker-compose.yml -f docker-compose.ha.yml"
-docker compose $HA up -d --build        # start
-docker compose $HA ps                   # every service must be "healthy"
-docker compose $HA logs -f worker       # logs of one service (api-1, scheduler, edge, qdrant-1...)
-docker compose $HA down                 # stop; keeps the data (volumes)
+docker compose $HA up -d --build                                # HA (CPU)
+docker compose $HA -f docker-compose.gpu.yml -f docker-compose.ha.gpu.yml up -d --build   # HA, NVIDIA
+docker compose $HA ps                                           # every service must be "healthy"
+docker compose $HA down                                         # stop; keeps the data (volumes)
 ```
 
-- **AMD GPU (ROCm) for the local model**: add the AMD file to the same command, `HA="-f docker-compose.yml -f docker-compose.ha.yml -f docker-compose.amd.yml"`, and set `RENDER_GID` to the host's `render` group (`getent group render | cut -d: -f3`, 993 on the test machine). Only Ollama uses the GPU; embeddings stay on the CPU. Check with `docker compose $HA exec ollama ollama ps`: it must say `100% GPU`. Measured on a Radeon RX 9060 XT (gfx1200, 16 GB) with `qwen3:4b-instruct-2507-q4_K_M`: a new question took 13.7 s through the HA stack, against 372 s on the CPU.
+- **AMD GPU (ROCm) for the local model**: `GPU=amd` (or add `-f docker-compose.amd.yml` to the command) and set `RENDER_GID` to the host's `render` group (`getent group render | cut -d: -f3`, 993 on the test machine). Only Ollama uses the GPU; embeddings stay on the CPU. Check with `docker compose $HA exec ollama ollama ps`: it must say `100% GPU`. Measured on a Radeon RX 9060 XT (gfx1200, 16 GB) with `qwen3:4b-instruct-2507-q4_K_M`: a new question took 13.7 s through the HA stack, against 372 s on the CPU.
 - Options: `--scale worker=4` for more workers, `--profile embeddings3` for a third embeddings node. The `HA_*` variables and the sizes are in `.env.example`.
 - The first start downloads the embeddings model (about 1.2 GB) into an empty volume and `up` can end with `embeddings-1 is unhealthy` while it downloads. The container keeps going: wait until `ps` shows it `healthy` and run `up -d` again.
 - Open <http://localhost:8080/health/ready> to check that Postgres and the queue answer. The administration panel is at `/admin` on the same port.
@@ -140,7 +155,7 @@ docker compose $HA down                 # stop; keeps the data (volumes)
 
 **Updating Qdrant one node at a time (HA)**: change the image in `docker-compose.ha.yml` (the `x-qdrant` block), then for each node in turn run `docker compose $HA up -d --no-deps qdrant-1`, wait until `docker compose $HA ps` shows it `healthy`, and continue with `qdrant-2` and `qdrant-3`. Answers and indexing keep working; the node catches up by itself when it returns.
 
-**Switching from basic to HA**: `docker compose down` first. The new Qdrant nodes start empty, so the first start indexes every document again (embedding time). To avoid it, restore a snapshot of the basic Qdrant into the cluster and replicate its shard to the other two nodes; this works, but it is manual and it is not automated. Start with the same `.env` and avoid indexing from the documents folder until you have checked the result (`FOLDER_SCAN_INTERVAL=0`): in a test, a differing configuration made the first sync reprocess documents. Going back to basic: `docker compose $HA down`, then `docker compose up -d`.
+**Switching from mini to HA**: `./scripts/deploy.sh up` with `DEPLOY_MODE=ha` removes the mini containers first. The new Qdrant nodes start empty, so the first start indexes every document again (embedding time). To avoid it, restore a snapshot of the basic Qdrant into the cluster and replicate its shard to the other two nodes; this works, but it is manual and it is not automated. Start with the same `.env` and avoid indexing from the documents folder until you have checked the result (`FOLDER_SCAN_INTERVAL=0`): in a test, a differing configuration made the first sync reprocess documents. Going back to mini: `DEPLOY_MODE=mini ./scripts/deploy.sh up`; the mini Qdrant volume still holds its index.
 
 ## Choosing the local model
 
@@ -385,7 +400,7 @@ curl -N -X POST http://localhost:8000/api/chat -H "Content-Type: application/jso
 `docker-compose.yml` runs one of everything and stays the default. `docker-compose.ha.yml` is a layer over it that
 puts a balancer in front, keeps every question in a durable queue and replicates what can fail:
 
-Start it with the commands in [Start, stop and update](#start-stop-and-update-basic-and-high-availability).
+Start it with `DEPLOY_MODE=ha` and `./scripts/deploy.sh up` (see [Deployment versions](#deployment-versions-mini-ha-and-kubernetes)).
 
 ```
 edge (Nginx: limits, SSE) ─► api-1, api-2 ─► redis-queue ─► worker ×2 ─► nginx-internal ─► embeddings ×2-3
@@ -422,11 +437,13 @@ Size it by measuring: the limit is the AI provider (Claude rate limits or local 
 `deploy/k8s/` contains a Kustomize deployment for a managed cluster or a local kind cluster: nginx as the entry point, two `api` replicas with a HorizontalPodAutoscaler, one `scheduler` (indexing, administration), Postgres, Qdrant, one embeddings service and local Ollama (GPU optional). The `deepseek-local` and `deepseek-cloud` overlays remove Ollama and send the answers to DeepSeek. It deliberately leaves out the Redis queue/cache and the workers: the application runs them only when their URLs are set, so the HA topology remains available without code changes.
 
 ```bash
-./deploy/k8s/scripts/install-tools.sh   # kubectl + kind (local)
-./deploy/k8s/scripts/kind-up.sh         # local cluster + metrics-server
-./deploy/k8s/scripts/deploy.sh          # build, load images, apply
+# .env: DEPLOY_MODE=k8s (and K8S_OVERLAY, K8S_NAMESPACE... if the defaults do not fit)
+./scripts/deploy.sh up                  # kind cluster if missing, build, load images, apply
 ./deploy/k8s/scripts/smoke.sh           # health checks and one question
+RENDER_ONLY=1 ./deploy/k8s/scripts/deploy.sh   # print the manifests that would be applied
 ```
+
+The scripts under `deploy/k8s/scripts/` also work on their own (`install-tools.sh`, `kind-up.sh`, `deploy.sh`, `status.sh`, `test-local.sh`, `kind-down.sh`).
 
 Full guide (cloud, secrets, scaling, GPU, storage, operations): [deploy/k8s/README.md](deploy/k8s/README.md).
 

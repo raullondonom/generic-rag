@@ -52,21 +52,49 @@ The only images required are `genric-rag-app`, `postgres`, `qdrant`, `text-embed
 - A node with **at least 4 CPUs and 8 GB of RAM** for the base manifests (16 GB recommended
   if Ollama runs on CPU). See [Sizing](#sizing).
 
+## Settings: one `.env` for every deployment
+
+The scripts read the repository's `.env` (the same file Docker Compose uses); a variable in the
+environment wins over it. The defaults are neutral, so nothing has to be set for a local test:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DEPLOY_MODE` | `mini` | `k8s` makes `./scripts/deploy.sh up/down/status/logs/restart` act on this deployment |
+| `K8S_OVERLAY` | `local` | `local` (kind), `cloud`, `deepseek-local`, `deepseek-cloud` |
+| `K8S_NAMESPACE` | `rag` | Namespace of every object |
+| `K8S_CLUSTER` | `rag` | kind cluster name |
+| `K8S_HOST_PORT` | `8081` | kind: entry point on localhost |
+| `K8S_IMAGE` | `genric-rag-app:local` | Application image; in the cloud, the one pushed to your registry |
+| `DOCS_HOST_PATH` | `./documents` | kind: folder mounted read-only into the node when the cluster is created |
+| `GPU` | `none` (`auto` = `none`) | `nvidia`: Ollama and embeddings on GPU (`TEI_GPU_IMAGE` picks the TEI tag); `amd`: Ollama with ROCm |
+| `K8S_CONFIG_FROM_ENV` | `true` | `false` applies the manifests' values only |
+
+`deploy.sh` renders the overlay through `deploy/k8s/.generated/` (gitignored, written again on every
+deploy). Every key of `base/configmap.yaml` that `.env` defines replaces the manifest's value
+(language, models, retrieval, `ANSWER_FORMAT`, `FOLDER_SCAN_INTERVAL`...), except the in-cluster
+addresses (`QDRANT_URL`, `EMBEDDING_URL`, `OLLAMA_URL`, `DOCS_PATH`) and, in the `deepseek-*` overlays,
+`LLM_PROVIDER`. `RENDER_ONLY=1 ./deploy/k8s/scripts/deploy.sh` prints the result without a cluster.
+
 ## Local cluster (kind)
 
 ```bash
-./deploy/k8s/scripts/install-tools.sh   # kubectl + kind in ~/.local/bin
-./deploy/k8s/scripts/kind-up.sh         # cluster + metrics-server, UI on :8081
-./deploy/k8s/scripts/deploy.sh          # build, load images, apply manifests
+# .env: DEPLOY_MODE=k8s
+./scripts/deploy.sh up                  # creates the kind cluster the first time, builds, loads, applies
 ./deploy/k8s/scripts/smoke.sh           # health + one question
+./scripts/deploy.sh down                # stops the kind node; the data stays inside it
 ```
 
-The local overview mounts `examples/documents` into the node (read-only) and uses
-`qwen3:0.6b` so the CPU test is usable. The first `deploy.sh` downloads the model and the
-embedding weights into PVCs; it can take several minutes.
+The same, step by step: `install-tools.sh` (kubectl + kind in `~/.local/bin`, Windows builds under
+Git Bash), `kind-up.sh` (cluster + metrics-server), `deploy.sh` (build, load images, apply).
 
-To use the full corpus instead of the examples, recreate the cluster with
-`DOCS_DIR="$PWD/documents" ./deploy/k8s/scripts/kind-up.sh` (the first index is slower on CPU).
+The cluster mounts `DOCS_HOST_PATH` into the node (read-only). The `local` overlay uses `qwen3:0.6b`
+so the CPU test is usable, unless `.env` sets `OLLAMA_CHAT_MODEL` (the sample `.env.example` does).
+The first `deploy.sh` downloads the model and the embedding weights into PVCs; it can take several
+minutes. The folder is fixed when the cluster is created: to change it, delete the cluster
+(`kind-down.sh`) and create it again.
+
+On Docker Desktop with the containerd image store, `kind load` fails for multi-platform images
+("content digest ... not found"); `deploy.sh` then imports only the node's platform.
 
 Open <http://localhost:8081> and <http://localhost:8081/admin>. The admin token is printed
 by `scripts/secrets.sh` and stored in `deploy/k8s/.local-secrets.env` (gitignored).
@@ -74,25 +102,23 @@ by `scripts/secrets.sh` and stored in `deploy/k8s/.local-secrets.env` (gitignore
 Useful commands:
 
 ```bash
-./deploy/k8s/scripts/status.sh          # pods, services, HPAs, PVCs, CPU/memory
-kubectl -n transit-chat logs -f deployment/scheduler
-kubectl -n transit-chat get hpa
-./deploy/k8s/scripts/kind-down.sh       # delete the whole local cluster
+./scripts/deploy.sh status              # pods, services, HPAs, PVCs, CPU/memory (status.sh)
+./scripts/deploy.sh logs scheduler      # or api, embeddings, ollama, postgres, qdrant
+kubectl -n rag get hpa
+./deploy/k8s/scripts/kind-down.sh       # delete the whole local cluster, data included
 ```
 
 ## Cloud cluster
 
-1. Push the image to a registry and update `deploy/k8s/overlays/cloud/kustomization.yaml`
-   (`images.newName` / `newTag`).
+1. Push the image to a registry and set `K8S_IMAGE` (e.g. `ghcr.io/your-org/genric-rag-app:1.0.0`)
+   and `K8S_OVERLAY=cloud` in `.env`.
 2. Choose a storage class for the `documents` PVC. It must be readable by every `api`,
    `scheduler` pod: use `ReadWriteMany` (EFS, Azure Files, CephFS, NFS...) or a single-node
    cluster with `ReadWriteOnce`. Edit `overlays/cloud/documents-pvc.yaml`.
 3. Apply:
 
    ```bash
-   kubectl apply -f deploy/k8s/base/namespace.yaml
-   ./deploy/k8s/scripts/secrets.sh          # reads .env or the current environment
-   kubectl apply -k deploy/k8s/overlays/cloud
+   BUILD=0 ./scripts/deploy.sh up           # namespace, secrets (from .env or the environment), manifests
    ```
 
    `secrets.sh` creates `rag-secrets` with `POSTGRES_PASSWORD`, `ADMIN_TOKEN`,
@@ -105,26 +131,27 @@ kubectl -n transit-chat get hpa
 5. Copy the corpus into the `documents` PVC (the app only reads it). For example:
 
    ```bash
-   kubectl -n transit-chat run docs-loader --image=alpine --restart=Never \
+   kubectl -n rag run docs-loader --image=alpine --restart=Never \
      --overrides='{"spec":{"containers":[{"name":"docs-loader","image":"alpine","command":["sleep","3600"],
        "volumeMounts":[{"name":"docs","mountPath":"/docs"}]}],
        "volumes":[{"name":"docs","persistentVolumeClaim":{"claimName":"documents"}}]}}'
-   kubectl -n transit-chat cp ./documents/. docs-loader:/docs
-   kubectl -n transit-chat delete pod docs-loader
+   kubectl -n rag cp ./documents/. docs-loader:/docs
+   kubectl -n rag delete pod docs-loader
    ```
 
    For very large corpora, populate the volume with `rclone`/`aws s3 sync` from a Job, or mount
    an NFS export directly.
 
-6. Check `kubectl -n transit-chat get hpa` and `kubectl top pods`. HPA needs
+6. Check `kubectl -n rag get hpa` and `kubectl top pods`. HPA needs
    `metrics-server` (present in most managed clusters; install it if not).
 
 ## Configuration and secrets
 
 - **`base/configmap.yaml`** — non-secret settings (model, retrieval, chunking, indexing,
-  language). Changing it does not restart the pods: after editing, run
+  language); the keys that `.env` defines replace them (see [Settings](#settings-one-env-for-every-deployment)).
+  Changing them does not restart the pods: after editing, run
   `RESTART=1 ./deploy/k8s/scripts/deploy.sh` (avoid it while the scheduler is indexing) or
-  `kubectl -n transit-chat rollout restart deployment/api deployment/scheduler`.
+  `kubectl -n rag rollout restart deployment/api deployment/scheduler`.
 - **`rag-secrets`** — `POSTGRES_PASSWORD`, `ADMIN_TOKEN`, `ANTHROPIC_API_KEY`,
   `CONFLUENCE_TOKEN`, `HF_TOKEN`. `ADMIN_TOKEN` is required: without it the app only accepts
   admin requests from loopback, which no longer matches a request through nginx.
@@ -157,10 +184,11 @@ Do not lower the CPU limit without also lowering the model size: at 1 vCPU a que
 
 ## GPU (optional)
 
-The base deployment runs Ollama on CPU. On an NVIDIA node:
+The base deployment runs Ollama on CPU. `GPU=nvidia` (or `amd`) in `.env` adds the patches below on
+every deploy. By hand, on an NVIDIA node:
 
 ```bash
-kubectl -n transit-chat patch deployment ollama --type=strategic \
+kubectl -n rag patch deployment ollama --type=strategic \
   --patch-file deploy/k8s/optional/ollama-gpu-nvidia.patch.yaml
 ```
 
@@ -171,7 +199,7 @@ automatically by the same manifest).
 Embeddings on GPU (NVIDIA only; TEI has no ROCm image for consumer Radeon):
 
 ```bash
-kubectl -n transit-chat patch deployment embeddings --type=strategic \
+kubectl -n rag patch deployment embeddings --type=strategic \
   --patch-file deploy/k8s/optional/embeddings-gpu-nvidia.patch.yaml
 ```
 
@@ -187,8 +215,8 @@ Ollama resources, because `kubectl apply` does not prune what is no longer in th
 ```bash
 # Put the key in .env (DEEPSEEK_API_KEY=sk-...) or export it, then:
 ./deploy/k8s/scripts/secrets.sh
-OVERLAY=deepseek-cloud ./deploy/k8s/scripts/deploy.sh   # managed cluster
-# OVERLAY=deepseek-local ./deploy/k8s/scripts/deploy.sh  # kind
+K8S_OVERLAY=deepseek-cloud ./deploy/k8s/scripts/deploy.sh   # managed cluster
+# K8S_OVERLAY=deepseek-local ./deploy/k8s/scripts/deploy.sh  # kind
 ```
 
 The overlay sets `LLM_PROVIDER=deepseek` and `OLLAMA_URL=""`; the settings in
@@ -212,9 +240,9 @@ The overlay sets `LLM_PROVIDER=deepseek` and `OLLAMA_URL=""`; the settings in
 - To go back to the local model: `OVERLAY=local` (or `cloud`) and redeploy; the model-pull Job
   downloads the model again. The base deployment keeps Ollama; only the `deepseek-*` overlays
   remove it.
-- `deepseek-local` pins `FOLDER_SCAN_INTERVAL=0` so a restored index is not reconciled
-  automatically. Remove it from `overlays/deepseek-local/patch-config.yaml` (or call
-  `POST /api/reindex`) when you add documents to a fresh local cluster.
+- `deepseek-local` sets `FOLDER_SCAN_INTERVAL=0` so a restored index is not reconciled
+  automatically. A `FOLDER_SCAN_INTERVAL` in `.env` replaces it on every deploy; on a fresh local
+  cluster set it to `60` there (or call `POST /api/reindex`) to index new documents.
 
 ## Operations
 
@@ -222,11 +250,11 @@ The overlay sets `LLM_PROVIDER=deepseek` and `OLLAMA_URL=""`; the settings in
 
 ```bash
 # Running, finished or failed, with the last message ("N procesados, ...").
-kubectl -n transit-chat exec postgres-0 -- psql -U rag -d rag -c \
+kubectl -n rag exec postgres-0 -- psql -U rag -d rag -c \
   "select source, status, started_at, finished_at, message from sync_runs;"
 
 # Documents by status and chunks written.
-kubectl -n transit-chat exec postgres-0 -- psql -U rag -d rag -c \
+kubectl -n rag exec postgres-0 -- psql -U rag -d rag -c \
   "select status, count(*), sum(chunks) from documents group by status;"
 
 # Same view as the administration panel, plus the vector count.
@@ -234,7 +262,7 @@ curl -s -H "X-Admin-Token: $ADMIN_TOKEN" http://<entry>/api/admin/status \
   | jq '{chunks_in_index, sources, folder}'
 
 # Progress while it runs.
-kubectl -n transit-chat logs -f deployment/scheduler | grep -E "Indexed|Folder:"
+kubectl -n rag logs -f deployment/scheduler | grep -E "Indexed|Folder:"
 ```
 
 `sync_runs.status` is `running` while the sync is in progress, `ok` when it finished and
@@ -243,19 +271,19 @@ Errors appear per document in `/api/documents?status=error` (with the `X-Admin-T
 
 ```bash
 # Update the application image
-kubectl -n transit-chat set image deployment/api app=ghcr.io/.../transit-supporter-chat:1.3.0
-kubectl -n transit-chat set image deployment/scheduler app=ghcr.io/.../transit-supporter-chat:1.3.0
+kubectl -n rag set image deployment/api app=ghcr.io/your-org/genric-rag-app:1.0.0
+kubectl -n rag set image deployment/scheduler app=ghcr.io/your-org/genric-rag-app:1.0.0
 
 # Reindex everything (admin token required)
 curl -X POST http://<entry>/api/reindex -H "X-Admin-Token: $ADMIN_TOKEN" \
   -H 'Content-Type: application/json' -d '{"source":"all","full":true}'
 
 # Logs
-kubectl -n transit-chat logs deployment/api
-kubectl -n transit-chat logs deployment/scheduler
+kubectl -n rag logs deployment/api
+kubectl -n rag logs deployment/scheduler
 
 # Backup (outside the cluster): pg_dump + Qdrant snapshot
-kubectl -n transit-chat exec postgres-0 -- pg_dump -U rag -d rag --no-owner | gzip > postgres.sql.gz
+kubectl -n rag exec postgres-0 -- pg_dump -U rag -d rag --no-owner | gzip > postgres.sql.gz
 ```
 
 The index can always be rebuilt from `documents/`; Postgres holds conversations, feedback
@@ -270,20 +298,20 @@ does not see.
 
 ```bash
 # 1. Stop indexing while the data is replaced.
-kubectl -n transit-chat scale deployment/scheduler --replicas=0
+kubectl -n rag scale deployment/scheduler --replicas=0
 
 # 2. Postgres (custom-format dump).
-kubectl -n transit-chat cp postgres.dump postgres-0:/tmp/db.dump
-kubectl -n transit-chat exec postgres-0 -- \
+kubectl -n rag cp postgres.dump postgres-0:/tmp/db.dump
+kubectl -n rag exec postgres-0 -- \
   pg_restore -U rag -d rag --clean --if-exists --no-owner /tmp/db.dump
 
 # 3. Qdrant. <collection> is settings.index_collection in Postgres
 #    (for example documents__qwen-qwen3-embedding-0-6b__bm25).
-POD=$(kubectl -n transit-chat get pod -l app=api -o jsonpath='{.items[0].metadata.name}')
-kubectl -n transit-chat exec "$POD" -c app -- python -c \
+POD=$(kubectl -n rag get pod -l app=api -o jsonpath='{.items[0].metadata.name}')
+kubectl -n rag exec "$POD" -c app -- python -c \
   "import httpx; print(httpx.delete('http://qdrant:6333/collections/<collection>').status_code)"
-kubectl -n transit-chat cp qdrant.snapshot "$POD":/tmp/qdrant.snapshot
-kubectl -n transit-chat exec -i "$POD" -c app -- python - <<'PY'
+kubectl -n rag cp qdrant.snapshot "$POD":/tmp/qdrant.snapshot
+kubectl -n rag exec -i "$POD" -c app -- python - <<'PY'
 import httpx
 with open("/tmp/qdrant.snapshot", "rb") as f:
     r = httpx.post("http://qdrant:6333/collections/<collection>/snapshots/upload?priority=snapshot",
@@ -292,19 +320,22 @@ print(r.status_code, r.text)
 PY
 
 # 4. Verify and start again.
-kubectl -n transit-chat exec postgres-0 -- psql -U rag -d rag -c \
+kubectl -n rag exec postgres-0 -- psql -U rag -d rag -c \
   "select value from settings where key='index_collection';"
-kubectl -n transit-chat exec "$POD" -c app -- python -c \
+kubectl -n rag exec "$POD" -c app -- python -c \
   "import httpx; print(httpx.get('http://qdrant:6333/collections/<collection>').json()['result']['points_count'])"
-kubectl -n transit-chat scale deployment/scheduler --replicas=1
+kubectl -n rag scale deployment/scheduler --replicas=1
 ```
 
 If the corpus changed since the backup, the scheduler reindexes the changed files on its
-next scan. To keep the restored index untouched, set `FOLDER_SCAN_INTERVAL=0` in the
-ConfigMap and restart the scheduler; `POST /api/reindex` still works when you want to
-reconcile it. Applying an overlay again resets that value to the one in the manifests (the
-`deepseek-local` overlay already sets `0`), so re-apply it or add it to a local patch after
-every deploy.
+next scan. To keep the restored index untouched, set `FOLDER_SCAN_INTERVAL=0` in `.env` before
+deploying (it is applied on every deploy, so it survives a redeploy) and restart the scheduler; `POST /api/reindex` still works when you want to
+reconcile it. Applied by hand (`kubectl apply -k deploy/k8s/overlays/...`, without `deploy.sh`) the
+manifests' value is used instead (60; the `deepseek-local` overlay sets `0`).
+
+On Windows (Git Bash), run `kubectl cp` from the folder of the backup with a relative file name:
+`kubectl cp C:/...` takes `C` as a pod name. Piping the file through `kubectl exec -i` truncated it in a
+test, so check the size (or `md5sum`) in the pod before restoring.
 
 ## Troubleshooting
 
@@ -313,7 +344,7 @@ every deploy.
 | `api` not ready | `kubectl logs deployment/api`; `/health/ready` checks Postgres (and Redis if configured). |
 | Embeddings slow / timeouts | `kubectl logs deployment/embeddings` (`inference_time`); verify the CPU limit and `RAYON_NUM_THREADS`. |
 | Scheduler does not index | `kubectl logs deployment/scheduler`; it waits for Qdrant and retries embeddings every minute. |
-| Model answers "not found" | `kubectl logs job/ollama-pull`; check `kubectl -n transit-chat exec deployment/ollama -- ollama list`. |
+| Model answers "not found" | `kubectl logs job/ollama-pull`; check `kubectl -n rag exec deployment/ollama -- ollama list`. |
 | 403 in `/admin` | `ADMIN_TOKEN` is missing from `rag-secrets`. |
 | HPA shows `<unknown>` | `metrics-server` is not ready. |
 | PVC stuck Pending | The cloud overlay uses `nfs-client`; replace it with an existing `ReadWriteMany` class. |
