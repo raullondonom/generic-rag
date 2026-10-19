@@ -38,7 +38,7 @@ http_status() {
 }
 
 documents() {
-  curl -s --max-time 30 -H "X-Admin-Token: $TOKEN" "$BASE_URL/api/documents"
+  curl -s --max-time 30 -H "X-Admin-Token: $TOKEN" "$BASE_URL/api/documents?limit=5000"
 }
 
 section "Cluster"
@@ -103,7 +103,9 @@ else
 fi
 
 section "Incremental indexing"
-if [ -z "$TOKEN" ]; then
+if [ "${SKIP_INDEX_TEST:-0}" = 1 ]; then
+  skip "automatic folder updates are off (FOLDER_SCAN_INTERVAL=0)"
+elif [ -z "$TOKEN" ]; then
   skip "admin token not found"
 elif [ ! -d "$DOCS_HOST_DIR" ] || [ ! -w "$DOCS_HOST_DIR" ]; then
   skip "DOCS_HOST_DIR is not a writable folder: $DOCS_HOST_DIR"

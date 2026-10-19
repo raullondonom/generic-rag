@@ -223,6 +223,48 @@ The index can always be rebuilt from `documents/`; Postgres holds conversations,
 and the source registry. Copy `scripts/backup-ha.sh` into a CronJob if you want the same
 backup as the compose deployment.
 
+### Restoring a Postgres dump and a Qdrant snapshot
+
+The dump and the snapshot must come from the same backup, and the `documents` volume must
+contain the same corpus; otherwise the scheduler reconciles the index and removes what it
+does not see.
+
+```bash
+# 1. Stop indexing while the data is replaced.
+kubectl -n transit-chat scale deployment/scheduler --replicas=0
+
+# 2. Postgres (custom-format dump).
+kubectl -n transit-chat cp postgres.dump postgres-0:/tmp/db.dump
+kubectl -n transit-chat exec postgres-0 -- \
+  pg_restore -U rag -d rag --clean --if-exists --no-owner /tmp/db.dump
+
+# 3. Qdrant. <collection> is settings.index_collection in Postgres
+#    (for example documents__qwen-qwen3-embedding-0-6b__bm25).
+POD=$(kubectl -n transit-chat get pod -l app=api -o jsonpath='{.items[0].metadata.name}')
+kubectl -n transit-chat exec "$POD" -c app -- python -c \
+  "import httpx; print(httpx.delete('http://qdrant:6333/collections/<collection>').status_code)"
+kubectl -n transit-chat cp qdrant.snapshot "$POD":/tmp/qdrant.snapshot
+kubectl -n transit-chat exec -i "$POD" -c app -- python - <<'PY'
+import httpx
+with open("/tmp/qdrant.snapshot", "rb") as f:
+    r = httpx.post("http://qdrant:6333/collections/<collection>/snapshots/upload?priority=snapshot",
+                   files={"snapshot": ("snapshot", f, "application/octet-stream")}, timeout=900)
+print(r.status_code, r.text)
+PY
+
+# 4. Verify and start again.
+kubectl -n transit-chat exec postgres-0 -- psql -U rag -d rag -c \
+  "select value from settings where key='index_collection';"
+kubectl -n transit-chat exec "$POD" -c app -- python -c \
+  "import httpx; print(httpx.get('http://qdrant:6333/collections/<collection>').json()['result']['points_count'])"
+kubectl -n transit-chat scale deployment/scheduler --replicas=1
+```
+
+If the corpus changed since the backup, the scheduler reindexes the changed files on its
+next scan. To keep the restored index untouched, set `FOLDER_SCAN_INTERVAL=0` in the
+ConfigMap and restart the scheduler; `POST /api/reindex` still works when you want to
+reconcile it.
+
 ## Troubleshooting
 
 | Symptom | Check |
