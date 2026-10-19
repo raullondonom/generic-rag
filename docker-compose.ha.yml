@@ -182,7 +182,7 @@ services:
     command:
       - |
         if getent hosts embeddings-3 >/dev/null 2>&1; then
-          export EMBEDDINGS_NODE_3="server embeddings-3:80 max_fails=2 fail_timeout=10s;"
+          export EMBEDDINGS_NODE_3="server embeddings-3:80 max_fails=2 fail_timeout=10s resolve;"
         else
           export EMBEDDINGS_NODE_3=""
         fi

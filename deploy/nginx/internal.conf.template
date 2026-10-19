@@ -1,11 +1,15 @@
 # Internal balancer (not published): embeddings nodes and Qdrant nodes. The application talks to these two
 # ports only, so nodes can be added, removed or restarted one at a time without touching it.
 
+# Docker's DNS. With "resolve" the node names are looked up again while running: a recreated container
+# gets a new IP, and without it nginx keeps sending to the old one.
+resolver 127.0.0.11 valid=10s ipv6=off;
+
 upstream embeddings_nodes {
     zone embeddings_nodes 64k;
     least_conn;
-    server embeddings-1:80 max_fails=2 fail_timeout=10s;
-    server embeddings-2:80 max_fails=2 fail_timeout=10s;
+    server embeddings-1:80 max_fails=2 fail_timeout=10s resolve;
+    server embeddings-2:80 max_fails=2 fail_timeout=10s resolve;
     ${EMBEDDINGS_NODE_3}
     keepalive 32;
 }
@@ -13,9 +17,9 @@ upstream embeddings_nodes {
 upstream qdrant_nodes {
     zone qdrant_nodes 64k;
     least_conn;
-    server qdrant-1:6333 max_fails=2 fail_timeout=10s;
-    server qdrant-2:6333 max_fails=2 fail_timeout=10s;
-    server qdrant-3:6333 max_fails=2 fail_timeout=10s;
+    server qdrant-1:6333 max_fails=2 fail_timeout=10s resolve;
+    server qdrant-2:6333 max_fails=2 fail_timeout=10s resolve;
+    server qdrant-3:6333 max_fails=2 fail_timeout=10s resolve;
     keepalive 32;
 }
 
