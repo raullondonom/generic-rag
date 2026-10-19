@@ -181,7 +181,8 @@ Choose the TEI tag that matches the GPU (89, 86, turing, hopper) in the patch.
 
 DeepSeek is called through its OpenAI-compatible API; the embeddings stay local. The
 `deepseek-local` and `deepseek-cloud` overlays remove the Ollama Deployment, Service, PVC and
-model-pull Job (the `components/no-ollama` component):
+model-pull Job (the `components/no-ollama` component); `deploy.sh` also deletes the existing
+Ollama resources, because `kubectl apply` does not prune what is no longer in the manifests:
 
 ```bash
 # Put the key in .env (DEEPSEEK_API_KEY=sk-...) or export it, then:

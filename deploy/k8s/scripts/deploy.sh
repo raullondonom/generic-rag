@@ -52,6 +52,15 @@ fi
 # The Job is immutable: recreate it so a changed model is pulled again.
 kubectl -n "$NAMESPACE" delete job ollama-pull --ignore-not-found >/dev/null
 
+# `$patch: delete` only removes them from the rendered output; `kubectl apply` does not prune
+# resources that already exist, so delete the local model explicitly when it is not used.
+case "$OVERLAY" in
+  deepseek-*)
+    kubectl -n "$NAMESPACE" delete deployment/ollama service/ollama pvc/ollama-models \
+      --ignore-not-found >/dev/null
+    ;;
+esac
+
 echo "Applying overlay '$OVERLAY'..."
 kubectl apply -k "$REPO_ROOT/deploy/k8s/overlays/$OVERLAY"
 
