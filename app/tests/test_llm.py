@@ -249,6 +249,14 @@ def test_build_llms_adds_deepseek_and_skips_ollama():
     assert set(build_llms(settings, FakeSpend())) == {"deepseek"}
 
 
+def test_llm_provider_ollama_keeps_ollama_next_to_a_remote_key():
+    settings = Settings(_env_file=None, anthropic_api_key="x", llm_provider="ollama", ollama_url="http://ollama:11434")
+    assert set(build_llms(settings, FakeSpend())) == {"anthropic", "ollama"}
+    assert settings.default_provider == "ollama"
+    auto = Settings(_env_file=None, anthropic_api_key="x", ollama_url="http://ollama:11434")
+    assert set(build_llms(auto, FakeSpend())) == {"anthropic"}
+
+
 def test_deepseek_is_the_default_provider_when_configured():
     assert Settings(_env_file=None, deepseek_api_key="x").default_provider == "deepseek"
     assert Settings(_env_file=None, llm_provider="deepseek").default_provider == "deepseek"

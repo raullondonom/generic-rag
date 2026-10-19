@@ -230,7 +230,7 @@ Every option is documented in [.env.example](.env.example). The most important o
 | Variable | Default | Description |
 |---|---|---|
 | `LANGUAGE` | `en` | Language of the UI, the canned answers and the prompts (`en` / `es`) |
-| `LLM_PROVIDER` | `auto` | `auto` (Claude if there is a key, else DeepSeek, else Ollama), `anthropic`, `deepseek` or `ollama` |
+| `LLM_PROVIDER` | `auto` | `auto` (Claude if there is a key, else DeepSeek, else Ollama), `anthropic`, `deepseek` or `ollama`. `ollama` answers locally even with a remote key set; with Docker Compose also start the container with `COMPOSE_PROFILES=ollama,ollama-with-claude` |
 | `ANTHROPIC_MODEL` / `ANTHROPIC_FAST_MODEL` | `claude-opus-5-5` / `claude-haiku-5-5` | Model for answers / model to prepare the search |
 | `DEEPSEEK_MODEL` / `DEEPSEEK_FAST_MODEL` | `deepseek-flash` / `deepseek-flash` | DeepSeek model for answers / for preparing the search |
 | `DEEPSEEK_THINKING` | `false` | DeepSeek thinking mode: slower and more output tokens |
