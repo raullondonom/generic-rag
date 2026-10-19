@@ -181,6 +181,18 @@ docker compose run --rm -v ./app/bench/results:/app/bench/results rag-app \
 
 Set `LLM_PROVIDER=deepseek` and `DEEPSEEK_API_KEY=sk-...` in `.env`. The application then uses only DeepSeek; to stop the local model container too, clear `COMPOSE_PROFILES` (or remove `ollama`). `deepseek-flash` answers and prepares the search; for harder questions set `DEEPSEEK_MODEL=deepseek-v4-pro`. Thinking mode is off by default (it is slower and bills more output tokens); `DEEPSEEK_THINKING=true` turns it on. The monthly cap, the spend record and `/admin` work the same as with Claude. Questions and the retrieved excerpts are sent to DeepSeek (secrets are redacted), so this is not a fully local setup. In Kubernetes use the `deepseek-local` or `deepseek-cloud` overlay, which deletes the Ollama resources: see the [Kubernetes guide](deploy/k8s/README.md).
 
+```bash
+# .env
+LLM_PROVIDER=deepseek
+DEEPSEEK_API_KEY=sk-...
+COMPOSE_PROFILES=          # do not start the local model
+
+docker compose up -d                          # Docker Compose test
+
+./deploy/k8s/scripts/secrets.sh               # Kubernetes: adds the key to rag-secrets
+OVERLAY=deepseek-local ./deploy/k8s/scripts/deploy.sh    # or deepseek-cloud
+```
+
 ## Secrets
 
 They are not stored in the repository. Docker Compose reads them from the system environment variables or from `.env`, which is in `.gitignore`.
