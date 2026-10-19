@@ -1,14 +1,11 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-namespace: transit-chat
+namespace: rag
 resources:
   - ../../base
   - documents-pvc.yaml
-images:
-  # Push the image to your registry and update this reference.
-  - name: genric-rag-app
-    newName: ghcr.io/raullondonom/transit-supporter-chat
-    newTag: "1.2.0"
+# The image is set by deploy.sh from K8S_IMAGE in .env (push it to your registry first, e.g.
+# K8S_IMAGE=ghcr.io/your-org/genric-rag-app:1.0.0). Applied without deploy.sh it is genric-rag-app:local.
 patches:
   - path: patch-service.yaml
     target:

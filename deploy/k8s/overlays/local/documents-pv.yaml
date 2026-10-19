@@ -1,5 +1,5 @@
-# The repository's documents are mounted into the kind node by scripts/kind-up.sh
-# (extraMounts: <repo>/examples/documents -> /mnt/documents).
+# The documents folder (DOCS_HOST_PATH of .env, ./documents by default) is mounted into the kind node by
+# scripts/kind-up.sh (extraMounts: <folder> -> /mnt/documents).
 apiVersion: v1
 kind: PersistentVolume
 metadata:

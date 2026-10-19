@@ -4,15 +4,14 @@
 #   ./deploy/k8s/scripts/test-local.sh
 #   SCALE_TEST=1 ./deploy/k8s/scripts/test-local.sh     # also exercises the HPA
 #
-# The indexing test writes a temporary file into DOCS_HOST_DIR (examples/documents by
-# default) and removes it at the end. Set DOCS_HOST_DIR to the folder mounted into the
-# cluster if the cluster was created with a different DOCS_DIR.
+# The indexing test writes a temporary file into DOCS_HOST_DIR (the folder mounted into the kind cluster,
+# DOCS_HOST_PATH of .env) and removes it at the end. Needs jq.
 set -uo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-BASE_URL="${BASE_URL:-http://localhost:8081}"
-NAMESPACE="${NAMESPACE:-transit-chat}"
-DOCS_HOST_DIR="${DOCS_HOST_DIR:-$REPO_ROOT/examples/documents}"
+# shellcheck source=env.sh
+. "$(dirname "${BASH_SOURCE[0]}")/env.sh"
+DOCS_HOST_DIR="${DOCS_HOST_DIR:-$DOCS_DIR}"
+command -v jq >/dev/null 2>&1 || { echo "test-local.sh needs jq" >&2; exit 1; }
 SAMPLE_FILE="${SAMPLE_FILE:-example-user-guide.md}"
 QUESTION="${QUESTION:-How do I add new documents?}"
 TOKEN_FILE="$REPO_ROOT/deploy/k8s/.local-secrets.env"
@@ -141,7 +140,7 @@ esac
 if [ "${SCALE_TEST:-0}" = "1" ]; then
   section "Scale test (HPA)"
   for i in 1 2 3; do
-    kubectl -n "$NAMESPACE" run "k8s-test-load-$i" --image=genric-rag-app:local --restart=Never --command -- \
+    kubectl -n "$NAMESPACE" run "k8s-test-load-$i" --image="$IMAGE" --restart=Never --command -- \
       python -c $'import time,urllib.request\nend=time.time()+45\nwhile time.time()<end:\n    urllib.request.urlopen("http://api:8000/api/config").read()' >/dev/null
   done
   sleep 45

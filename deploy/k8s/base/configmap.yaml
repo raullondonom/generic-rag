@@ -1,14 +1,15 @@
 # Non-secret configuration shared by every application role.
 # Secrets (POSTGRES_PASSWORD, ADMIN_TOKEN, ANTHROPIC_API_KEY, DEEPSEEK_API_KEY,
 # CONFLUENCE_TOKEN, HF_TOKEN) live in the `rag-secrets` Secret, created by
-# deploy/k8s/scripts/secrets.sh.
+# deploy/k8s/scripts/secrets.sh. deploy.sh replaces every key that .env defines (K8S_CONFIG_FROM_ENV=false
+# keeps these values), except the in-cluster addresses.
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: rag-config
 data:
   # UI and corpus
-  LANGUAGE: "es"
+  LANGUAGE: "en"
   LOG_LEVEL: "INFO"
   TZ: "UTC"
 
@@ -69,7 +70,9 @@ data:
   SCORE_MARGIN: "0.12"
   MAX_CHUNKS_PER_DOC: "2"
   CONTEXTUAL_INDEXING: "false"
-  HISTORY_TURNS: "0"
+  HISTORY_TURNS: "6"
+  # free = Markdown at the model's choice; structured = short Answer / Basis / Conclusion for phones
+  ANSWER_FORMAT: "free"
 
   # Optional integrations
   CONFLUENCE_ENABLED: "false"

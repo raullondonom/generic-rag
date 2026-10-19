@@ -1,7 +1,8 @@
-# Strategic merge patch: embeddings on an NVIDIA GPU.
-#   kubectl -n transit-chat patch deployment embeddings --type=strategic \
+# Strategic merge patch: embeddings on an NVIDIA GPU. Applied by deploy.sh with GPU=nvidia, or by hand:
+#   kubectl -n <namespace> patch deployment embeddings --type=strategic \
 #     --patch-file deploy/k8s/optional/embeddings-gpu-nvidia.patch.yaml
 # Pick the TEI image tag for the GPU architecture:
+#   (deploy.sh takes the tag of TEI_GPU_IMAGE in .env)
 #   RTX 40xx / L4 / L40 -> 89-1.9   RTX 30xx / A10 -> 86-1.9   A100 -> 1.9
 #   RTX 20xx / T4 -> turing-1.9     H100 -> hopper-1.9
 # TEI only supports AMD Instinct (MI200/MI300) with its rocm image; consumer Radeon is not supported.

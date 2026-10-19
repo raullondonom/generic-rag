@@ -1,0 +1,15 @@
+# Strategic merge patch: Ollama on an AMD GPU (ROCm). Applied by deploy.sh with GPU=amd, or by hand:
+#   kubectl -n <namespace> patch deployment ollama --type=strategic \
+#     --patch-file deploy/k8s/optional/ollama-gpu-amd.patch.yaml
+# Requires the AMD GPU device plugin (amd.com/gpu). The embeddings stay on the CPU: TEI has no ROCm image
+# for consumer Radeon. For an architecture ROCm does not support yet (e.g. RDNA4, gfx1200), add the env
+# HSA_OVERRIDE_GFX_VERSION (12.0.0 for gfx1200).
+spec:
+  template:
+    spec:
+      containers:
+        - name: ollama
+          image: ollama/ollama:0.40.5-rocm
+          resources:
+            limits:
+              amd.com/gpu: "1"

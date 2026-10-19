@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Overview of the deployment: pods, services, HPAs, volumes and CPU/memory.
 set -euo pipefail
-NAMESPACE="${NAMESPACE:-transit-chat}"
+# shellcheck source=env.sh
+. "$(dirname "${BASH_SOURCE[0]}")/env.sh"
 
 kubectl -n "$NAMESPACE" get pods -o wide
 echo

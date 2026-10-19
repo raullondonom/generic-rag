@@ -3,16 +3,12 @@
 # Values that are missing are generated once and kept in deploy/k8s/.local-secrets.env (gitignored).
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-NAMESPACE="${NAMESPACE:-transit-chat}"
+# shellcheck source=env.sh
+. "$(dirname "${BASH_SOURCE[0]}")/env.sh"
 SECRETS_FILE="$REPO_ROOT/deploy/k8s/.local-secrets.env"
 
-env_get() {
-  local key="$1"
-  if [ -f "$REPO_ROOT/.env" ]; then
-    sed -n "s/^${key}=//p" "$REPO_ROOT/.env" | tail -1
-  fi
-}
+# Like Docker Compose: KEY from the environment or .env, else GENRIC_RAG_KEY from the environment or .env
+env_get() { env_file_get "$1"; }
 
 if [ -f "$SECRETS_FILE" ]; then
   # shellcheck disable=SC1090
@@ -20,11 +16,11 @@ if [ -f "$SECRETS_FILE" ]; then
 fi
 
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$(env_get POSTGRES_PASSWORD)}"
-POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$(env_get GENRIC_RAG_POSTGRES_PASSWORD)}"
+POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-${GENRIC_RAG_POSTGRES_PASSWORD:-$(env_get GENRIC_RAG_POSTGRES_PASSWORD)}}"
 ADMIN_TOKEN="${ADMIN_TOKEN:-$(env_get ADMIN_TOKEN)}"
-ADMIN_TOKEN="${ADMIN_TOKEN:-$(env_get GENRIC_RAG_ADMIN_TOKEN)}"
+ADMIN_TOKEN="${ADMIN_TOKEN:-${GENRIC_RAG_ADMIN_TOKEN:-$(env_get GENRIC_RAG_ADMIN_TOKEN)}}"
 ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-$(env_get ANTHROPIC_API_KEY)}"
-ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-$(env_get GENRIC_RAG_ANTHROPIC_API_KEY)}"
+ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-${GENRIC_RAG_ANTHROPIC_API_KEY:-$(env_get GENRIC_RAG_ANTHROPIC_API_KEY)}}"
 DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY:-$(env_get DEEPSEEK_API_KEY)}"
 CONFLUENCE_TOKEN="${CONFLUENCE_TOKEN:-$(env_get CONFLUENCE_TOKEN)}"
 CONFLUENCE_TOKEN="${CONFLUENCE_TOKEN:-$(env_get JIRA_TOKEN)}"
