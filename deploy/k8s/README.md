@@ -197,7 +197,7 @@ The overlay sets `LLM_PROVIDER=deepseek` and `OLLAMA_URL=""`; the settings in
 | Variable | Default | Meaning |
 |---|---|---|
 | `DEEPSEEK_URL` | `https://api.deepseek.com` | OpenAI-compatible base URL |
-| `DEEPSEEK_MODEL` | `deepseek-flash` | Answers (`deepseek-v4-pro` is slower and more expensive) |
+| `DEEPSEEK_MODEL` | `deepseek-flash` | Answers; the picker shows it as DeepSeek V4.1 Flash (`deepseek-v4-pro` is slower and more expensive) |
 | `DEEPSEEK_FAST_MODEL` | `deepseek-flash` | Search preparation/reranking; it must support JSON mode |
 | `DEEPSEEK_MAX_TOKENS` | `8000` | Maximum answer length |
 | `DEEPSEEK_THINKING` | `false` | Thinking mode: slower and more output tokens |
