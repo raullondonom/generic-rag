@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rag-config
+data:
+  LLM_PROVIDER: "deepseek"
+  # No local model: the app builds only the DeepSeek provider.
+  OLLAMA_URL: ""
+  # Optional: deepseek-v4-pro for harder questions (slower and more expensive).
+  # DEEPSEEK_MODEL: "deepseek-v4-pro"
+  # Optional: thinking mode (slower, more output tokens; off by default).
+  # DEEPSEEK_THINKING: "true"

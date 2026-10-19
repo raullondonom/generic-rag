@@ -1,11 +1,15 @@
 import asyncio
+import json
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from rag.config import Settings
 from rag.embeddings import document_prefix, query_prefix
+from rag.llm import build_llms
 from rag.llm.anthropic_llm import FALLBACK_BETA, AnthropicLLM, with_cache_points
+from rag.llm.deepseek_llm import DeepSeekLLM
 from rag.llm.spending import BudgetExhausted, PriceTable, Usage, default_prices, usage_by_model
 
 
@@ -167,3 +171,90 @@ def test_budget_exhausted_blocks_the_call():
     with pytest.raises(BudgetExhausted):
         asyncio.run(collect(llm.stream("sys", [{"role": "user", "content": "x"}])))
     assert client.calls == []
+
+
+# ---------------------------------------------------------------- DeepSeek
+
+class DeepSpend:
+    def __init__(self):
+        self.prices = default_prices()
+        self.records = []
+        self.checks = []
+
+    def check(self, model, input_chars, max_tokens, purpose):
+        self.checks.append((model, purpose))
+
+    def record_usage(self, model, purpose, usage, cost, simulated):
+        self.records.append((model, purpose, usage, cost))
+
+
+def make_deepseek(handler, spend=None):
+    client = httpx.AsyncClient(
+        base_url="https://api.deepseek.com/v1/",
+        headers={"Authorization": "Bearer x"},
+        transport=httpx.MockTransport(handler),
+    )
+    llm = DeepSeekLLM(Settings(_env_file=None, deepseek_api_key="x"), spend or DeepSpend(), client=client)
+    return llm
+
+
+def test_deepseek_complete_json_uses_json_mode_and_records_usage():
+    def handler(request):
+        body = json.loads(request.content)
+        assert body["model"] == "deepseek-flash"
+        assert body["response_format"] == {"type": "json_object"}
+        assert body["thinking"] == {"type": "disabled"}
+        assert request.url.path == "/v1/chat/completions"
+        system = body["messages"][0]["content"]
+        assert "json" in system.lower() and '"corrected"' in system
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": '{"corrected": "q", "standalone": "q", "queries": [], "missing": []}'}}],
+            "usage": {"prompt_tokens": 100, "prompt_cache_hit_tokens": 20,
+                      "prompt_cache_miss_tokens": 80, "completion_tokens": 10},
+        })
+
+    llm = make_deepseek(handler)
+    schema = {"type": "object", "properties": {"corrected": {"type": "string"}}}
+    data = asyncio.run(llm.complete_json("sys", [{"role": "user", "content": "x"}], schema))
+    assert data["corrected"] == "q"
+    model, purpose, usage, cost = llm.spend.records[0]
+    assert (model, purpose) == ("deepseek-flash", "prepare")
+    assert usage.input_tokens == 80 and usage.cache_read == 20 and usage.output_tokens == 10
+    assert cost > 0
+
+
+def test_deepseek_stream_yields_tokens_and_records_usage():
+    def handler(request):
+        body = json.loads(request.content)
+        assert body["stream"] is True
+        assert body["stream_options"] == {"include_usage": True}
+        assert body["thinking"] == {"type": "disabled"}
+        sse = (
+            'data: {"choices":[{"delta":{"content":"Hola"}}]}\n\n'
+            'data: {"choices":[{"delta":{"content":" mundo"}}]}\n\n'
+            'data: {"choices":[],"usage":{"prompt_tokens":50,"prompt_cache_hit_tokens":0,'
+            '"prompt_cache_miss_tokens":50,"completion_tokens":2}}\n\n'
+            'data: [DONE]\n\n'
+        )
+        return httpx.Response(200, content=sse.encode(), headers={"content-type": "text/event-stream"})
+
+    llm = make_deepseek(handler)
+    out = asyncio.run(collect(llm.stream("sys", [{"role": "user", "content": "x"}])))
+    assert out == ["Hola", " mundo"]
+    assert llm.spend.records[0][0:2] == ("deepseek-flash", "answer")
+
+
+def test_build_llms_adds_deepseek_and_skips_ollama():
+    settings = Settings(_env_file=None, deepseek_api_key="x", ollama_url="http://ollama:11434")
+    assert set(build_llms(settings, FakeSpend())) == {"deepseek"}
+
+
+def test_deepseek_is_the_default_provider_when_configured():
+    assert Settings(_env_file=None, deepseek_api_key="x").default_provider == "deepseek"
+    assert Settings(_env_file=None, llm_provider="deepseek").default_provider == "deepseek"
+
+
+def test_deepseek_price():
+    prices = default_prices()
+    assert prices.cost("deepseek-flash", Usage(input_tokens=1_000_000, output_tokens=1_000_000)) == pytest.approx(0.30 + 1.20)
+    assert prices.cost("deepseek-v4-pro", Usage(input_tokens=1_000_000, output_tokens=1_000_000)) == pytest.approx(1.32 + 3.96)

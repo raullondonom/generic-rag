@@ -53,6 +53,8 @@ def check(services) -> dict:
         providers["anthropic"] = probe(lambda: {"dry_run": s.dry_run, **services.spend.summary()})
     if "ollama" in services.chat.llms:
         providers["ollama"] = probe(lambda: _ollama(s.ollama_url, s.ollama_chat_model))
+    if "deepseek" in services.chat.llms:
+        providers["deepseek"] = probe(lambda: _deepseek(s.deepseek_url, s.deepseek_api_key, s.deepseek_model))
     return {
         "ok": all(v["ok"] for v in result.values()) and any(p["ok"] for p in providers.values()),
         "default_provider": s.default_provider,
@@ -68,4 +70,13 @@ def _ollama(url: str, model: str) -> dict:
     wanted = model if ":" in model else f"{model}:latest"
     if wanted not in names:
         raise RuntimeError(f"model {model} is not downloaded (the ollama-init service pulls it)")
+    return {"model": model}
+
+
+def _deepseek(url: str, key: str, model: str) -> dict:
+    r = httpx.get(f"{url.rstrip('/')}/models", headers={"Authorization": f"Bearer {key}"}, timeout=5)
+    r.raise_for_status()
+    names = {m.get("id") for m in r.json().get("data", [])}
+    if model not in names:
+        raise RuntimeError(f"model {model} is not offered by the API")
     return {"model": model}

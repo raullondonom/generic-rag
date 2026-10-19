@@ -296,7 +296,7 @@ async def lifespan(_: FastAPI):
     await asyncio.to_thread(services.start)
     await services.start_async()
     if not services.chat.llms:
-        log.error("No AI provider: set ANTHROPIC_API_KEY, DRY_RUN=true or OLLAMA_URL")
+        log.error("No AI provider: set ANTHROPIC_API_KEY, DEEPSEEK_API_KEY, DRY_RUN=true or OLLAMA_URL")
     log.info("RAG ready. Providers: %s (default: %s). Embeddings: %s",
              ", ".join(services.chat.llms) or "none", settings.default_provider, settings.embedding_model)
     yield
@@ -672,7 +672,8 @@ async def admin_status():
         "embed_model": settings.embedding_model,
         "chunks_in_index": await asyncio.to_thread(services.store.count),
         "sources": await asyncio.to_thread(services.state.summary),
-        "spend": await asyncio.to_thread(services.spend.summary) if "anthropic" in llms else None,
+        "spend": await asyncio.to_thread(services.spend.summary)
+        if any(llm.remote for llm in llms.values()) else None,
         "role": settings.role,
         "dry_run": settings.dry_run,
         "confluence": {

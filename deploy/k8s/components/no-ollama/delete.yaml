@@ -1,0 +1,24 @@
+# Remove the local model when a remote provider answers (DeepSeek, Claude).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama
+$patch: delete
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama
+$patch: delete
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ollama-models
+$patch: delete
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ollama-pull
+$patch: delete

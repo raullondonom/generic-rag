@@ -44,3 +44,21 @@ models:
         cache_write_5m: 6.25
         cache_read: 0.50
         output: 25.00
+  # DeepSeek through its OpenAI-compatible API. Check the current prices at
+  # https://api-docs.deepseek.com/quick_start/pricing before relying on the monthly cap.
+  # The table uses the PEAK rates (off-peak costs half), so the cap is conservative.
+  # DeepSeek does not charge a separate cache write: cache_write_5m mirrors the miss price.
+  deepseek-flash:
+    tiers:
+      - up_to_input_tokens: null
+        input: 0.30
+        cache_write_5m: 0.30
+        cache_read: 0.006
+        output: 1.20
+  deepseek-v4-pro:
+    tiers:
+      - up_to_input_tokens: null
+        input: 1.32
+        cache_write_5m: 1.32
+        cache_read: 0.044
+        output: 3.96

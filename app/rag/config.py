@@ -17,7 +17,8 @@ class Settings(BaseSettings):
     # Administration panel (/admin) and its API. Empty = only from this machine (not through ngrok)
     admin_token: str = ""
 
-    # Default AI provider: auto = Claude if ANTHROPIC_API_KEY is set, otherwise Ollama
+    # Default AI provider: auto = Claude if ANTHROPIC_API_KEY is set, else DeepSeek (if
+    # DEEPSEEK_API_KEY is set), else Ollama. LLM_PROVIDER=deepseek forces DeepSeek.
     llm_provider: str = "auto"
 
     # Ollama (local). Empty URL = disabled
@@ -26,7 +27,7 @@ class Settings(BaseSettings):
     ollama_think: bool = False
     ollama_num_ctx: int = 12288
     ollama_num_gpu: int = -1  # model layers on the GPU; -1 = automatic
-    ollama_with_claude: bool = False  # offer Ollama too when Claude is available
+    ollama_with_claude: bool = False  # offer Ollama too when a remote provider is configured
 
     # Embeddings (Hugging Face text-embeddings-inference, always local)
     embedding_url: str = "http://embeddings:80"
@@ -45,9 +46,17 @@ class Settings(BaseSettings):
     anthropic_fallbacks: bool = True
     monthly_budget_usd: float = 10.0
     tz: str = "UTC"  # time zone for the monthly budget cut-off
-    dry_run: bool = False  # simulated Claude: no API calls, no spending
+    dry_run: bool = False  # simulated remote model: no API calls, no spending
 
-    # Redaction before indexing and before sending text to Claude
+    # DeepSeek through its OpenAI-compatible API (no extra SDK: httpx)
+    deepseek_api_key: str = ""
+    deepseek_url: str = "https://api.deepseek.com"
+    deepseek_model: str = "deepseek-flash"
+    deepseek_fast_model: str = "deepseek-flash"  # preparing and reranking the search
+    deepseek_max_tokens: int = 8000
+    deepseek_thinking: bool = False  # thinking mode is slower and costs more output tokens
+
+    # Redaction before indexing and before sending text to a remote model
     redact_secrets: bool = True
     redact_personal_data: bool = False
 
@@ -172,6 +181,14 @@ class Settings(BaseSettings):
             raise ValueError("ROLE must be all, api, worker or scheduler")
         return value
 
+    @field_validator("llm_provider")
+    @classmethod
+    def _check_provider(cls, value: str) -> str:
+        value = value.strip().lower()
+        if value not in ("auto", "anthropic", "ollama", "deepseek"):
+            raise ValueError("LLM_PROVIDER must be auto, anthropic, ollama or deepseek")
+        return value
+
     @field_validator("confluence_sync_time", "control_check_time")
     @classmethod
     def _check_daily_time(cls, value: str, info) -> str:
@@ -224,10 +241,18 @@ class Settings(BaseSettings):
         return bool(self.anthropic_api_key) or self.dry_run
 
     @property
+    def deepseek_enabled(self) -> bool:
+        return bool(self.deepseek_api_key)
+
+    @property
     def default_provider(self) -> str:
         if self.llm_provider != "auto":
             return self.llm_provider
-        return "anthropic" if self.anthropic_enabled else "ollama"
+        if self.anthropic_enabled:
+            return "anthropic"
+        if self.deepseek_enabled:
+            return "deepseek"
+        return "ollama"
 
 
 @lru_cache

@@ -20,13 +20,18 @@ fi
 
 if command -v kind >/dev/null 2>&1 && kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
   echo "Loading images into kind cluster '$CLUSTER'..."
-  for img in \
-    "$IMAGE" \
-    postgres:18.4-alpine \
-    qdrant/qdrant:v1.19.2 \
-    ghcr.io/huggingface/text-embeddings-inference:cpu-1.9 \
-    ollama/ollama:0.40.5 \
-    nginx:1.28-alpine; do
+  images=(
+    "$IMAGE"
+    postgres:18.4-alpine
+    qdrant/qdrant:v1.19.2
+    ghcr.io/huggingface/text-embeddings-inference:cpu-1.9
+    nginx:1.28-alpine
+  )
+  case "$OVERLAY" in
+    deepseek-*) ;;  # no local model
+    *) images+=(ollama/ollama:0.40.5) ;;
+  esac
+  for img in "${images[@]}"; do
     if docker image inspect "$img" >/dev/null 2>&1; then
       kind load docker-image "$img" --name "$CLUSTER"
     else
@@ -37,6 +42,12 @@ fi
 
 kubectl apply -f "$REPO_ROOT/deploy/k8s/base/namespace.yaml"
 "$REPO_ROOT/deploy/k8s/scripts/secrets.sh"
+
+if [[ "$OVERLAY" == deepseek-* ]] && \
+   [ -z "$(kubectl -n "$NAMESPACE" get secret rag-secrets -o jsonpath='{.data.DEEPSEEK_API_KEY}' 2>/dev/null)" ]; then
+  echo "DEEPSEEK_API_KEY is required for overlay '$OVERLAY': put it in .env or export it." >&2
+  exit 1
+fi
 
 # The Job is immutable: recreate it so a changed model is pulled again.
 kubectl -n "$NAMESPACE" delete job ollama-pull --ignore-not-found >/dev/null
@@ -56,7 +67,6 @@ for target in \
   statefulset/postgres \
   statefulset/qdrant \
   deployment/embeddings \
-  deployment/ollama \
   deployment/api \
   deployment/scheduler \
   deployment/nginx; do
@@ -64,16 +74,22 @@ for target in \
   kubectl -n "$NAMESPACE" rollout status "$target" --timeout=900s
 done
 
-echo "Waiting for the Ollama model (first run downloads it)..."
-if kubectl -n "$NAMESPACE" wait --for=condition=complete job/ollama-pull --timeout=1800s; then
-  echo "Model ready."
-else
-  echo "The model is still downloading. Check: kubectl -n $NAMESPACE logs job/ollama-pull" >&2
+if kubectl -n "$NAMESPACE" get deployment ollama >/dev/null 2>&1; then
+  echo "Waiting for deployment/ollama..."
+  kubectl -n "$NAMESPACE" rollout status deployment/ollama --timeout=300s
+  echo "Waiting for the Ollama model (first run downloads it)..."
+  if kubectl -n "$NAMESPACE" wait --for=condition=complete job/ollama-pull --timeout=1800s; then
+    echo "Model ready."
+  else
+    echo "The model is still downloading. Check: kubectl -n $NAMESPACE logs job/ollama-pull" >&2
+  fi
 fi
 
 echo
 kubectl -n "$NAMESPACE" get pods
-if [ "$OVERLAY" = local ]; then
-  echo
-  echo "Entry point: http://localhost:${HOST_PORT:-8081}"
-fi
+case "$OVERLAY" in
+  local|deepseek-local)
+    echo
+    echo "Entry point: http://localhost:${HOST_PORT:-8081}"
+    ;;
+esac

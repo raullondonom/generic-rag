@@ -25,6 +25,7 @@ ADMIN_TOKEN="${ADMIN_TOKEN:-$(env_get ADMIN_TOKEN)}"
 ADMIN_TOKEN="${ADMIN_TOKEN:-$(env_get GENRIC_RAG_ADMIN_TOKEN)}"
 ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-$(env_get ANTHROPIC_API_KEY)}"
 ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-$(env_get GENRIC_RAG_ANTHROPIC_API_KEY)}"
+DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY:-$(env_get DEEPSEEK_API_KEY)}"
 CONFLUENCE_TOKEN="${CONFLUENCE_TOKEN:-$(env_get CONFLUENCE_TOKEN)}"
 CONFLUENCE_TOKEN="${CONFLUENCE_TOKEN:-$(env_get JIRA_TOKEN)}"
 HF_TOKEN="${HF_TOKEN:-$(env_get HF_TOKEN)}"
@@ -61,6 +62,7 @@ kubectl -n "$NAMESPACE" create secret generic rag-secrets \
   --from-literal=POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
   --from-literal=ADMIN_TOKEN="$ADMIN_TOKEN" \
   --from-literal=ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
+  --from-literal=DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY:-}" \
   --from-literal=CONFLUENCE_TOKEN="${CONFLUENCE_TOKEN:-}" \
   --from-literal=HF_TOKEN="${HF_TOKEN:-}" \
   --dry-run=client -o yaml | kubectl apply -f - >/dev/null

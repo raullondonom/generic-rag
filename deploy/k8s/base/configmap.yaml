@@ -1,6 +1,7 @@
 # Non-secret configuration shared by every application role.
-# Secrets (POSTGRES_PASSWORD, ADMIN_TOKEN, ANTHROPIC_API_KEY, CONFLUENCE_TOKEN, HF_TOKEN)
-# live in the `rag-secrets` Secret, created by deploy/k8s/scripts/secrets.sh.
+# Secrets (POSTGRES_PASSWORD, ADMIN_TOKEN, ANTHROPIC_API_KEY, DEEPSEEK_API_KEY,
+# CONFLUENCE_TOKEN, HF_TOKEN) live in the `rag-secrets` Secret, created by
+# deploy/k8s/scripts/secrets.sh.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -11,7 +12,8 @@ data:
   LOG_LEVEL: "INFO"
   TZ: "UTC"
 
-  # Local model. LLM_PROVIDER=auto uses Claude when ANTHROPIC_API_KEY is set, Ollama otherwise.
+  # LLM_PROVIDER=auto uses Claude when ANTHROPIC_API_KEY is set, DeepSeek when
+  # DEEPSEEK_API_KEY is set, and Ollama otherwise.
   LLM_PROVIDER: "auto"
   DRY_RUN: "false"
   OLLAMA_URL: "http://ollama:11434"
@@ -20,6 +22,14 @@ data:
   OLLAMA_NUM_CTX: "12288"
   OLLAMA_NUM_GPU: "-1"
   OLLAMA_WITH_CLAUDE: "false"
+
+  # DeepSeek (remote, OpenAI-compatible). Put DEEPSEEK_API_KEY in rag-secrets and use an
+  # overlay that removes Ollama (deepseek-local or deepseek-cloud).
+  DEEPSEEK_URL: "https://api.deepseek.com"
+  DEEPSEEK_MODEL: "deepseek-flash"
+  DEEPSEEK_FAST_MODEL: "deepseek-flash"
+  DEEPSEEK_MAX_TOKENS: "8000"
+  DEEPSEEK_THINKING: "false"
 
   # Embeddings (local, text-embeddings-inference)
   EMBEDDING_URL: "http://embeddings:80"

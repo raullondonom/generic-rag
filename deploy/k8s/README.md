@@ -177,6 +177,44 @@ kubectl -n transit-chat patch deployment embeddings --type=strategic \
 
 Choose the TEI tag that matches the GPU (89, 86, turing, hopper) in the patch.
 
+## DeepSeek instead of a local model
+
+DeepSeek is called through its OpenAI-compatible API; the embeddings stay local. The
+`deepseek-local` and `deepseek-cloud` overlays remove the Ollama Deployment, Service, PVC and
+model-pull Job (the `components/no-ollama` component):
+
+```bash
+# Put the key in .env (DEEPSEEK_API_KEY=sk-...) or export it, then:
+./deploy/k8s/scripts/secrets.sh
+OVERLAY=deepseek-cloud ./deploy/k8s/scripts/deploy.sh   # managed cluster
+# OVERLAY=deepseek-local ./deploy/k8s/scripts/deploy.sh  # kind
+```
+
+The overlay sets `LLM_PROVIDER=deepseek` and `OLLAMA_URL=""`; the settings in
+`base/configmap.yaml` select the model:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DEEPSEEK_URL` | `https://api.deepseek.com` | OpenAI-compatible base URL |
+| `DEEPSEEK_MODEL` | `deepseek-flash` | Answers (`deepseek-v4-pro` is slower and more expensive) |
+| `DEEPSEEK_FAST_MODEL` | `deepseek-flash` | Search preparation/reranking; it must support JSON mode |
+| `DEEPSEEK_MAX_TOKENS` | `8000` | Maximum answer length |
+| `DEEPSEEK_THINKING` | `false` | Thinking mode: slower and more output tokens |
+
+- The spend of every call is recorded and capped by `MONTHLY_BUDGET_USD`; update the DeepSeek
+  prices in `app/rag/prices.yaml` if they change.
+- `/health` checks the `/models` endpoint with the key, and `/admin` offers DeepSeek as the
+  provider.
+- **Privacy:** the question and the retrieved excerpts are sent to DeepSeek. Secrets are
+  redacted before sending (and the corpus was redacted at indexing time), but this is no
+  longer a fully local setup.
+- To go back to the local model: `OVERLAY=local` (or `cloud`) and redeploy; the model-pull Job
+  downloads the model again. The base deployment keeps Ollama; only the `deepseek-*` overlays
+  remove it.
+- `deepseek-local` pins `FOLDER_SCAN_INTERVAL=0` so a restored index is not reconciled
+  automatically. Remove it from `overlays/deepseek-local/patch-config.yaml` (or call
+  `POST /api/reindex`) when you add documents to a fresh local cluster.
+
 ## Operations
 
 ### Indexing status
@@ -263,7 +301,9 @@ kubectl -n transit-chat scale deployment/scheduler --replicas=1
 If the corpus changed since the backup, the scheduler reindexes the changed files on its
 next scan. To keep the restored index untouched, set `FOLDER_SCAN_INTERVAL=0` in the
 ConfigMap and restart the scheduler; `POST /api/reindex` still works when you want to
-reconcile it.
+reconcile it. Applying an overlay again resets that value to the one in the manifests (the
+`deepseek-local` overlay already sets `0`), so re-apply it or add it to a local patch after
+every deploy.
 
 ## Troubleshooting
 

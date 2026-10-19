@@ -5,7 +5,7 @@ A question-answering assistant that replies **only** with the information found 
 - the files of a local folder (PDF, Word, Excel, PowerPoint, CSV, HTML, Markdown, plain text, emails, OpenDocument, RTF, EPUB…), and
 - optionally, the pages and attachments of **Confluence Cloud** spaces (off by default).
 
-Answers come from **Claude** (Anthropic API) when an API key is available, or from a **local model** (Ollama, on GPU or CPU) otherwise. With a Claude key the local model container is not even started, so it uses no GPU or RAM. Embeddings are always computed locally with Hugging Face [text-embeddings-inference](https://github.com/huggingface/text-embeddings-inference).
+Answers come from **Claude** (Anthropic API) or **DeepSeek** when their API key is available, or from a **local model** (Ollama, on GPU or CPU) otherwise. With a remote key the application does not use or offer the local model (the DeepSeek Kubernetes overlays remove it; in Docker Compose, clear `COMPOSE_PROFILES` to stop its container), so it uses no GPU or RAM. Embeddings are always computed locally with Hugging Face [text-embeddings-inference](https://github.com/huggingface/text-embeddings-inference).
 
 The web UI is mobile first and also works in desktop browsers. Its texts, and the assistant's prompts, are available in English and Spanish (`LANGUAGE=en|es`).
 
@@ -15,7 +15,7 @@ The web UI is mobile first and also works in desktop browsers. Its texts, and th
 - It has no internet access: the AI gets no tools, so it cannot search anywhere else.
 - If the information is missing or the question is ambiguous, it says so and **asks the user** for what it needs.
 - If no chunk reaches the minimum similarity (`MIN_SCORE`), the AI is not even called.
-- Documents never leave the machine while indexing. When Claude is used, only the chunks relevant to each question are sent, after secrets are redacted.
+- Documents never leave the machine while indexing. When a remote model is used (Claude or DeepSeek), only the chunks relevant to each question are sent, after secrets are redacted.
 
 ## Features
 
@@ -24,11 +24,11 @@ The web UI is mobile first and also works in desktop browsers. Its texts, and th
 - **Search preparation.** Before searching, a fast model (`ANTHROPIC_FAST_MODEL`, or the local model) fixes the spelling, rewrites the question self-contained (resolving references to the conversation) and splits it into one search per topic, in the terms the documents would use. It also returns keywords: the distinctive terms of the question and the synonyms or official terms the documents may use for them (an everyday word and its legal name, for example). Each keyword runs a semantic search restricted to the chunks that contain it (full-text index of Qdrant in `LANGUAGE`, without accents, stemmed and without stopwords; built on the stored chunks, nothing is re-embedded), so a document that names the thing literally is found even when the embeddings miss it. A keyword found in more than `KEYWORD_MAX_SHARE` of the chunks (2 %) is too generic to filter and is skipped; the others, rarest first, get up to half of `TOP_K`, one chunk per document, each searched with the topic query that mentions it. The searches run together with the question as typed and their results are fused (reciprocal rank fusion, where every search keeps at least its best hit, and at most `MAX_CHUNKS_PER_DOC` chunks per document). The answering model gets the original question, the interpretation and the searches, and checks them: if the interpretation changed the meaning, it answers the original question. `QUERY_PREPARATION=false` turns it off.
 - **Hybrid search.** Every chunk has its embedding and a BM25 sparse vector (`SPARSE_SEARCH`, on by default): words without accents and stemmed in `LANGUAGE`, codes such as `C.11` or `D.2` kept whole, and the IDF applied by Qdrant. The semantic searches find paraphrases; BM25 finds the exact terms and codes the embeddings miss. Both are fused by rank, and BM25 alone never calls the AI: some semantic search must reach `MIN_SCORE`.
 - **Reranking (optional).** With `RERANK=true`, the hybrid search gathers `RERANK_CANDIDATES` chunks (30) and the fast model scores each one from 0 to 3 by how much it helps to answer this question, taking the interpretation and the user's context into account (and preferring the rule in force over an older text quoted elsewhere). Only the useful ones reach the answering model, so the context is smaller and more precise. If the reranker fails, the fused order is kept.
-- **Contextual indexing (optional).** With `CONTEXTUAL_INDEXING=true`, a fast Claude model writes a short search note for every chunk while indexing: what it establishes (rule, article or code, sanction, deadline…) in the terms people search for, guided by the collection's search notes. A chunk that mixes many subjects (a list of thirty rules, for example) becomes findable by each of them. The note is embedded and full-text indexed with the chunk, but the answering model still reads the original text only, so a wrong note never changes an answer. Notes are cached in Postgres by content and go through the monthly budget; if it runs out, the documents left without notes are retried on the next sync.
-- **Clean end-user page, separate administration.** Users only see the conversation, the sources and the ratings. The provider, Claude's spend, the index, the source review, the ratings summary and the documents with problems live in the administration panel at `/admin` (see [Administration](#administration)).
+- **Contextual indexing (optional).** With `CONTEXTUAL_INDEXING=true`, a fast Claude model (an Anthropic key is required) writes a short search note for every chunk while indexing: what it establishes (rule, article or code, sanction, deadline…) in the terms people search for, guided by the collection's search notes. A chunk that mixes many subjects (a list of thirty rules, for example) becomes findable by each of them. The note is embedded and full-text indexed with the chunk, but the answering model still reads the original text only, so a wrong note never changes an answer. Notes are cached in Postgres by content and go through the monthly budget; if it runs out, the documents left without notes are retried on the next sync.
+- **Clean end-user page, separate administration.** Users only see the conversation, the sources and the ratings. The provider, the spend of the remote models, the index, the source review, the ratings summary and the documents with problems live in the administration panel at `/admin` (see [Administration](#administration)).
 - **The collection's own look.** Name, icon, colors, welcome text, suggested questions, a disclaimer and optional selectors (for example a region or a product line) come from `ui.json` in the control folder, so each collection brings its identity (see [Look of the collection](#look-of-the-collection-uijson)). The page always shows that answers are written by an AI that may make mistakes, and that questions are stored.
-- **Claude spending control.** Before each call the worst-case cost is estimated against a monthly cap (`MONTHLY_BUDGET_USD`), and every call is recorded with its tokens and cost. The administration panel shows the month's spend. Prompt caching reuses the system prompt and the conversation history between turns, the search is prepared with a cheaper model, and `DRY_RUN=true` simulates Claude without spending anything.
-- **Secret redaction.** API keys, tokens, private keys, passwords and connection strings are replaced with `[REDACTED]` before indexing and before anything is sent to Claude. Personal data (emails, card or ID numbers) is optional.
+- **Remote model spending control.** Before each call the worst-case cost is estimated against a monthly cap (`MONTHLY_BUDGET_USD`), and every call is recorded with its tokens and cost. The administration panel shows the month's spend. Prompt caching reuses the system prompt and the conversation history between turns, the search is prepared with a cheaper model, and `DRY_RUN=true` simulates the remote model without spending anything.
+- **Secret redaction.** API keys, tokens, private keys, passwords and connection strings are replaced with `[REDACTED]` before indexing and before anything is sent to a remote model. Personal data (emails, card or ID numbers) is optional.
 - **One collection per embeddings model.** When `EMBEDDING_MODEL` changes, everything is reindexed from scratch at startup and the previous model's collection is deleted, so vectors from different models are never mixed.
 - **Health checks.** `GET /health` checks the database, Qdrant, the embeddings service (it must load the configured model), the index and each AI provider.
 
@@ -40,16 +40,17 @@ documents/ ──┐                          ┌─> Qdrant (vectors)
 Confluence ──┘   · ingestion            ├─> embeddings (TEI + Qwen3-Embedding-0.6B)
 (optional)
                  · REST API + web UI    ├─> Claude API (if there is an API key)
+                                        ├─> DeepSeek API (if configured)
                                         └─> Ollama (local model, "ollama" profile)
 ```
 
 | Service | Role | Port (localhost only) |
 |---|---|---|
 | `rag-app` | API, web UI and ingestion | `8000` |
-| `postgres` | Ingestion state, conversations, ratings and Claude spend | — |
+| `postgres` | Ingestion state, conversations, ratings and spend of the remote models | — |
 | `qdrant` | Vector database | `6333` (dashboard at `/dashboard`) |
 | `embeddings` | Local embeddings (CPU, or GPU with `docker-compose.gpu.yml`) | — |
-| `ollama` | Local model (`ollama` profile, only without a Claude key) | `11434` |
+| `ollama` | Local model (`ollama` profile, only without a remote key) | `11434` |
 | `ollama-init` | Pulls the local model and exits (same profile) | — |
 | `ngrok` | Protected public tunnel (optional, `ngrok` profile) | `4040` (dashboard) |
 
@@ -57,7 +58,7 @@ Confluence ──┘   · ingestion            ├─> embeddings (TEI + Qwen3-E
 
 | Scenario | CPU | RAM | GPU | Disk | Answer time |
 |---|---|---|---|---|---|
-| **Minimum**: answers with Claude; embeddings on CPU | 4 x86-64 cores with AVX2 | 8 GB (6 GB for Docker) | Not needed | 10 GB | 5–15 s |
+| **Minimum**: answers with a remote model; embeddings on CPU | 4 x86-64 cores with AVX2 | 8 GB (6 GB for Docker) | Not needed | 10 GB | 5–15 s |
 | **Local without GPU**: Ollama on CPU | 8+ cores with AVX2 | 16 GB (12 GB for Docker) | No | 20 GB | 30–90 s |
 | **Recommended**: Ollama and embeddings on GPU | 8+ cores with AVX2 | 32 GB (16 GB for Docker) | NVIDIA with 8 GB of VRAM or more, driver ≥ 550 | 25 GB SSD | 3–10 s |
 
@@ -89,9 +90,9 @@ Optional:
 
 - **NVIDIA GPU**: uncomment `COMPOSE_PATH_SEPARATOR` and `COMPOSE_FILE` in `.env`, set `TEI_GPU_IMAGE` for your GPU architecture, and run `docker compose up -d`.
 - **Automatic GPU detection (Linux)**: run `./scripts/compose.sh up -d` instead of `docker compose up -d`. It uses NVIDIA (`docker-compose.gpu.yml`) if `nvidia-smi` and the NVIDIA runtime work, AMD/ROCm (`docker-compose.amd.yml`) if `/dev/kfd` is accessible, and the CPU otherwise. `GPU=nvidia|amd|none` forces a choice; `./scripts/compose.sh --detect` only prints it. With AMD only Ollama uses the GPU (the embeddings service has no ROCm image and stays on the CPU); with several GPUs set `HIP_VISIBLE_DEVICES` in `.env`.
-- **Claude**: set the API key (see [Secrets](#secrets)). Claude then answers and Ollama is not started. To keep both and choose in the UI: `COMPOSE_PROFILES=ollama,ollama-with-claude` and `OLLAMA_WITH_CLAUDE=true`.
+- **Claude or DeepSeek**: set the API key (see [Secrets](#secrets)). The remote model then answers and Ollama is not started. To keep both and choose in the UI: `COMPOSE_PROFILES=ollama,ollama-with-claude` and `OLLAMA_WITH_CLAUDE=true`.
 - **Confluence**: set the `CONFLUENCE_*` variables in `.env` (see below). It syncs once a day (`CONFLUENCE_SYNC_TIME`, 16:00 by default) and on demand from the administration panel.
-- **Only Claude, no local model**: remove `ollama` from `COMPOSE_PROFILES` and leave `OLLAMA_URL` empty.
+- **Only a remote model, no local model**: remove `ollama` from `COMPOSE_PROFILES` and, if wanted, leave `OLLAMA_URL` empty.
 - **Spanish UI and prompts**: `LANGUAGE=es`.
 
 ## Start, stop and update (basic and high availability)
@@ -145,7 +146,7 @@ docker compose $HA down                 # stop; keeps the data (volumes)
 
 `app/bench/llm_benchmark.py` compares Ollama models on your hardware with a fixed dataset: every question gets all the documents of a fictional company as context (with distractors), and the score is deterministic, with no AI judge. It counts expected facts found, `[n]` citations, and saying "I can't find it" when the answer is not in the documents. It also measures time to first token, tokens per second and VRAM.
 
-With a Claude key Ollama is not running, so start it first: `COMPOSE_PROFILES=ollama,ollama-with-claude docker compose up -d ollama`.
+With a remote key Ollama is not running, so start it first: `COMPOSE_PROFILES=ollama,ollama-with-claude docker compose up -d ollama`.
 
 ```bash
 docker compose run --rm -v ./app/bench/results:/app/bench/results rag-app \
@@ -176,13 +177,18 @@ docker compose run --rm -v ./app/bench/results:/app/bench/results rag-app \
   python -m bench.llm_benchmark --dataset es --rescore /app/bench/results/<run>.json
 ```
 
+## Using a remote model (Claude or DeepSeek)
+
+Set `LLM_PROVIDER=deepseek` and `DEEPSEEK_API_KEY=sk-...` in `.env`. The application then uses only DeepSeek; to stop the local model container too, clear `COMPOSE_PROFILES` (or remove `ollama`). `deepseek-flash` answers and prepares the search; for harder questions set `DEEPSEEK_MODEL=deepseek-v4-pro`. Thinking mode is off by default (it is slower and bills more output tokens); `DEEPSEEK_THINKING=true` turns it on. The monthly cap, the spend record and `/admin` work the same as with Claude. Questions and the retrieved excerpts are sent to DeepSeek (secrets are redacted), so this is not a fully local setup. In Kubernetes use the `deepseek-local` or `deepseek-cloud` overlay, which deletes the Ollama resources: see the [Kubernetes guide](deploy/k8s/README.md).
+
 ## Secrets
 
 They are not stored in the repository. Docker Compose reads them from the system environment variables or from `.env`, which is in `.gitignore`.
 
 | Variable | Use |
 |---|---|
-| `ANTHROPIC_API_KEY` or `GENRIC_RAG_ANTHROPIC_API_KEY` | Claude API key. Optional: without it only the local model is offered |
+| `ANTHROPIC_API_KEY` or `GENRIC_RAG_ANTHROPIC_API_KEY` | Claude API key. Optional: without it only the local model or DeepSeek is offered |
+| `DEEPSEEK_API_KEY` | DeepSeek API key (platform.deepseek.com). Optional: without it DeepSeek is not offered |
 | `POSTGRES_PASSWORD` or `GENRIC_RAG_POSTGRES_PASSWORD` | Postgres password (letters and digits). Only reachable inside the Docker network |
 | `CONFLUENCE_EMAIL` / `CONFLUENCE_TOKEN`, or `JIRA_EMAIL` / `JIRA_TOKEN` | Only for Confluence: Atlassian email and API token (id.atlassian.com → Security → API tokens) |
 | `NGROK_AUTHTOKEN` | Only to publish the app with ngrok |
@@ -197,16 +203,18 @@ Every option is documented in [.env.example](.env.example). The most important o
 | Variable | Default | Description |
 |---|---|---|
 | `LANGUAGE` | `en` | Language of the UI, the canned answers and the prompts (`en` / `es`) |
-| `LLM_PROVIDER` | `auto` | `auto` (Claude if there is a key, otherwise Ollama), `anthropic` or `ollama` |
+| `LLM_PROVIDER` | `auto` | `auto` (Claude if there is a key, else DeepSeek, else Ollama), `anthropic`, `deepseek` or `ollama` |
 | `ANTHROPIC_MODEL` / `ANTHROPIC_FAST_MODEL` | `claude-opus-5-5` / `claude-haiku-5-5` | Model for answers / model to prepare the search |
+| `DEEPSEEK_MODEL` / `DEEPSEEK_FAST_MODEL` | `deepseek-flash` / `deepseek-flash` | DeepSeek model for answers / for preparing the search |
+| `DEEPSEEK_THINKING` | `false` | DeepSeek thinking mode: slower and more output tokens |
 | `ADMIN_TOKEN` | — | Token of the administration panel (`/admin`). Without it, the panel only opens from this machine |
 | `ANTHROPIC_EFFORT` | `medium` | Claude's reasoning depth |
-| `MONTHLY_BUDGET_USD` | `10` | Monthly cap for Claude |
-| `DRY_RUN` | `false` | Simulated Claude, no spending |
+| `MONTHLY_BUDGET_USD` | `10` | Monthly cap for Claude and DeepSeek |
+| `DRY_RUN` | `false` | Simulated remote model, no spending |
 | `OLLAMA_CHAT_MODEL` | `qwen3:4b-instruct-2507-q4_K_M` | Local model (see the benchmark) |
-| `OLLAMA_WITH_CLAUDE` | `false` | Also offer Ollama when Claude is available (start it with the `ollama-with-claude` profile) |
+| `OLLAMA_WITH_CLAUDE` | `false` | Also offer Ollama when a remote provider is configured (start it with the `ollama-with-claude` profile) |
 | `EMBEDDING_MODEL` | `Qwen/Qwen3-Embedding-0.6B` | Embeddings model (TEI) |
-| `REDACT_SECRETS` / `REDACT_PERSONAL_DATA` | `true` / `false` | Redaction before indexing and before Claude |
+| `REDACT_SECRETS` / `REDACT_PERSONAL_DATA` | `true` / `false` | Redaction before indexing and before a remote model |
 | `CONVERSATION_RETENTION_DAYS` | `180` | Inactive conversations are deleted after this many days (0 = never) |
 | `CONFLUENCE_ENABLED` | `false` | Turns Confluence Cloud sync on |
 | `CONFLUENCE_URL` / `CONFLUENCE_SPACES` | — | For example `https://your-company.atlassian.net/wiki` / keys of the spaces to index (shown in the URL: `/wiki/spaces/<KEY>/`) |
@@ -280,7 +288,7 @@ The choice always reaches the search preparation and the answering model as the 
 
 ## Administration
 
-The administration panel is at `/admin`. It is where the AI provider for every answer is chosen (users cannot choose it; the choice survives restarts), and where the panel shows Claude's spend, the index status with the reindex buttons, the source review, the ratings summary and the documents with errors or without text.
+The administration panel is at `/admin`. It is where the AI provider for every answer is chosen (users cannot choose it; the choice survives restarts), and where the panel shows the spend of the remote models, the index status with the reindex buttons, the source review, the ratings summary and the documents with errors or without text.
 
 - With `ADMIN_TOKEN` set (or the `GENRIC_RAG_ADMIN_TOKEN` environment variable), the panel asks for it once and keeps it in that browser; the admin API expects it in the `X-Admin-Token` header.
 - Without a token, the panel and its API only answer requests from this machine (localhost); requests through ngrok or from other machines are refused. Set a token before exposing the app.
@@ -314,7 +322,7 @@ docker compose exec rag-app python -m rag.feedback --format csv > feedback.csv
 docker compose exec rag-app python -m rag.feedback --format summary
 ```
 
-Typical uses: a `not_found` answer often means a document is missing from the index or `MIN_SCORE` is too high; `bad_sources` points at retrieval (chunking, `TOP_K`, the embeddings model); `wrong` or `incomplete` on one model compared with another helps decide the local model or Claude's effort.
+Typical uses: a `not_found` answer often means a document is missing from the index or `MIN_SCORE` is too high; `bad_sources` points at retrieval (chunking, `TOP_K`, the embeddings model); `wrong` or `incomplete` on one model compared with another helps decide the local model, the DeepSeek model or Claude's effort.
 
 ## External access with ngrok (testing)
 
@@ -328,7 +336,7 @@ The end-user page has no login, so the ngrok tunnel is protected with a user and
    ```
 4. Find the public URL at <http://localhost:4040> or with `docker compose logs ngrok`.
 
-To close it, run `docker compose stop ngrok`. Keep in mind that anyone who gets in through ngrok can query the indexed documents and spend Claude credits.
+To close it, run `docker compose stop ngrok`. Keep in mind that anyone who gets in through ngrok can query the indexed documents and spend AI credits.
 
 ## REST API
 
@@ -341,7 +349,7 @@ To close it, run `docker compose stop ngrok`. Keep in mind that anyone who gets 
 | `GET` / `DELETE` | `/api/conversations/{id}` | Messages of a conversation (with their ratings) / delete it |
 | `PUT` / `DELETE` | `/api/conversations/{id}/messages/{message_id}/feedback` | `{rating: 1\|-1, reason?, comment?}` / remove the rating |
 | `GET` | `/api/file?path=` | Opens a cited file of the folder |
-| `GET` | `/api/admin/status` | **Admin.** Index, providers, Claude spend and last sync |
+| `GET` | `/api/admin/status` | **Admin.** Index, providers, AI spend and last sync |
 | `PUT` | `/api/admin/provider` | **Admin.** `{provider}` → provider for every answer (`null` = back to `LLM_PROVIDER`) |
 | `GET` | `/api/feedback/summary?days=30` | **Admin.** Aggregated ratings |
 | `GET` | `/api/control?findings=200` | **Admin.** Control folder registries and the last source review |
@@ -399,7 +407,7 @@ Size it by measuring: the limit is the AI provider (Claude rate limits or local 
 
 ## Kubernetes
 
-`deploy/k8s/` contains a Kustomize deployment for a managed cluster or a local kind cluster: nginx as the entry point, two `api` replicas with a HorizontalPodAutoscaler, one `scheduler` (indexing, administration), Postgres, Qdrant, one embeddings service and local Ollama (GPU optional). It deliberately leaves out the Redis queue/cache and the workers: the application runs them only when their URLs are set, so the HA topology remains available without code changes.
+`deploy/k8s/` contains a Kustomize deployment for a managed cluster or a local kind cluster: nginx as the entry point, two `api` replicas with a HorizontalPodAutoscaler, one `scheduler` (indexing, administration), Postgres, Qdrant, one embeddings service and local Ollama (GPU optional). The `deepseek-local` and `deepseek-cloud` overlays remove Ollama and send the answers to DeepSeek. It deliberately leaves out the Redis queue/cache and the workers: the application runs them only when their URLs are set, so the HA topology remains available without code changes.
 
 ```bash
 ./deploy/k8s/scripts/install-tools.sh   # kubectl + kind (local)
