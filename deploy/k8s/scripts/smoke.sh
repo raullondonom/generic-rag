@@ -15,9 +15,13 @@ curl -fsS "$BASE_URL/health/ready"; echo
 echo "== UI config =="
 curl -fsS "$BASE_URL/api/config" | head -c 300; echo
 
-# JSON string of the question (backslashes and quotes escaped)
+# JSON string of the question (backslashes and quotes escaped), sent from a file: on Windows a body in the
+# command line reaches curl in the ANSI code page and accents break the JSON (400)
 q="$(printf '%s' "$QUESTION" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+body="$(mktemp)"
+trap 'rm -f "$body"' EXIT
+printf '{"question": "%s"}' "$q" > "$body"
 echo "== asking: $QUESTION =="
 timeout 300 curl -fsS -N -X POST "$BASE_URL/api/chat" \
   -H 'Content-Type: application/json; charset=utf-8' \
-  --data-binary "{\"question\": \"$q\"}" | sed -n '1,80p'
+  --data-binary @"$(host_path "$body")" | sed -n '1,80p'
