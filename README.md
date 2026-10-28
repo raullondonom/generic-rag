@@ -119,7 +119,7 @@ On Windows run it from Git Bash (it comes with Git for Windows).
 |---|---|---|---|
 | `DEPLOY_MODE` | `mini` | `ha` | `k8s` |
 | Files | `docker-compose.yml` | `docker-compose.yml` + `docker-compose.ha.yml` | `deploy/k8s/` (Kustomize, overlay `K8S_OVERLAY`) |
-| Entry point | <http://localhost:8000> (`APP_PORT`) | <http://localhost:8080> (`HA_PORT`) | kind: <http://localhost:8081> (`K8S_HOST_PORT`); cloud: the `nginx` LoadBalancer |
+| Entry point | <http://localhost:8000> (`APP_PORT`) | <http://localhost:8080> (`HA_PORT`) | local cluster (kind or k3s): <http://localhost:8081> (`K8S_HOST_PORT`); cloud: the `nginx` LoadBalancer |
 | Services | app, Postgres, Qdrant, embeddings, Ollama | Nginx, 2 API, workers, scheduler, queue and cache (Redis), Qdrant ×3, embeddings ×2-3, Postgres, Ollama | Nginx ×2, API ×2-6 (HPA), scheduler, Postgres, Qdrant, embeddings, Ollama |
 | RAM (CPU only, without the local model) | about 3 GB (measured) | about 8-9 GB (estimated, not measured under load) | about 8 GB of requests |
 | GPU `nvidia` | Ollama and embeddings (`docker-compose.gpu.yml`) | Ollama and the embeddings nodes (`+ docker-compose.ha.gpu.yml`) | Ollama and embeddings (patches in `deploy/k8s/optional/`, needs the NVIDIA device plugin) |
@@ -127,7 +127,8 @@ On Windows run it from Git Bash (it comes with Git for Windows).
 | For | one server, tests | one server that must keep answering when a node fails | a cluster: autoscaling, several nodes |
 
 - **mini** and **ha** share the Postgres volume, the model volumes and the service names: `up` in one of them removes the containers of the other (the volumes stay), so they never answer at the same time. Conversations and ratings are kept when you switch; the vector index is not shared (see the note on switching).
-- **k8s** creates the kind cluster the first time (`K8S_OVERLAY=local`, documents from `DOCS_HOST_PATH`) and applies the overlay with the namespace, the image and the application settings of `.env`. `down` stops the kind node (the data stays inside it). Details: [deploy/k8s/README.md](deploy/k8s/README.md).
+- **k8s** creates the local cluster the first time (`K8S_OVERLAY=local`, documents from `DOCS_HOST_PATH`) and applies the overlay with the namespace, the image and the application settings of `.env`. `down` stops the cluster node (the data stays inside it). Details: [deploy/k8s/README.md](deploy/k8s/README.md).
+- The local cluster is **kind** (default) or **k3s** (`K8S_DISTRO=k3s`): k3s runs the same manifests with a lighter control plane, so the cluster fits in a 2 GB server when the embeddings run on another machine (`K8S_EMBEDDINGS_URL`, started there with `deploy/k8s/scripts/embeddings-host.sh`). In one test with a DeepSeek overlay, the cluster without embeddings used 1.3-1.5 GB under k3s; under kind it did not fit in 2 GB. See [Small servers](deploy/k8s/README.md#small-servers-k3s-and-external-embeddings).
 - `GPU=auto` uses NVIDIA if `nvidia-smi` and the Docker NVIDIA runtime work, AMD/ROCm if `/dev/kfd` is accessible (Linux), the CPU otherwise; `./scripts/compose.sh --detect` prints the choice. In k8s `auto` means `none`.
 - Without the script, the same with Docker Compose:
 
@@ -445,16 +446,16 @@ Size it by measuring: the limit is the AI provider (Claude rate limits or local 
 
 ## Kubernetes
 
-`deploy/k8s/` contains a Kustomize deployment for a managed cluster or a local kind cluster: nginx as the entry point, two `api` replicas with a HorizontalPodAutoscaler, one `scheduler` (indexing, administration), Postgres, Qdrant, one embeddings service and local Ollama (GPU optional). The `deepseek-local` and `deepseek-cloud` overlays remove Ollama and send the answers to DeepSeek. It deliberately leaves out the Redis queue/cache and the workers: the application runs them only when their URLs are set, so the HA topology remains available without code changes.
+`deploy/k8s/` contains a Kustomize deployment for a managed cluster or a local kind or k3s cluster (`K8S_DISTRO`): nginx as the entry point, two `api` replicas with a HorizontalPodAutoscaler, one `scheduler` (indexing, administration), Postgres, Qdrant, one embeddings service and local Ollama (GPU optional). The `deepseek-local` and `deepseek-cloud` overlays remove Ollama and send the answers to DeepSeek. It deliberately leaves out the Redis queue/cache and the workers: the application runs them only when their URLs are set, so the HA topology remains available without code changes.
 
 ```bash
 # .env: DEPLOY_MODE=k8s (and K8S_OVERLAY, K8S_NAMESPACE... if the defaults do not fit)
-./scripts/deploy.sh up                  # kind cluster if missing, build, load images, apply
+./scripts/deploy.sh up                  # local cluster if missing, build, load images, apply
 ./deploy/k8s/scripts/smoke.sh           # health checks and one question
 RENDER_ONLY=1 ./deploy/k8s/scripts/deploy.sh   # print the manifests that would be applied
 ```
 
-The scripts under `deploy/k8s/scripts/` also work on their own (`install-tools.sh`, `kind-up.sh`, `deploy.sh`, `status.sh`, `test-local.sh`, `kind-down.sh`).
+The scripts under `deploy/k8s/scripts/` also work on their own (`install-tools.sh`, `kind-up.sh`, `k3s-up.sh`, `deploy.sh`, `status.sh`, `test-local.sh`, `kind-down.sh`, `k3s-down.sh`, `embeddings-host.sh`).
 
 Full guide (cloud, secrets, scaling, GPU, storage, operations): [deploy/k8s/README.md](deploy/k8s/README.md).
 

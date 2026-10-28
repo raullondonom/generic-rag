@@ -46,8 +46,9 @@ The only images required are `genric-rag-app`, `postgres`, `qdrant`, `text-embed
 
 ## Requirements
 
-- A Kubernetes cluster (local: kind; cloud: any managed cluster).
-- `kubectl` and `kind` for the local option (`scripts/install-tools.sh` installs both).
+- A Kubernetes cluster (local: kind or k3s in Docker; cloud: any managed cluster).
+- `kubectl`, and `kind` for the default local option (`scripts/install-tools.sh` installs both; k3s needs
+  only Docker).
 - Docker for building/loading the application image.
 - A node with **at least 4 CPUs and 8 GB of RAM** for the base manifests (16 GB recommended
   if Ollama runs on CPU). See [Sizing](#sizing).
@@ -60,12 +61,16 @@ environment wins over it. The defaults are neutral, so nothing has to be set for
 | Variable | Default | Meaning |
 |---|---|---|
 | `DEPLOY_MODE` | `mini` | `k8s` makes `./scripts/deploy.sh up/down/status/logs/restart` act on this deployment |
-| `K8S_OVERLAY` | `local` | `local` (kind), `cloud`, `deepseek-local`, `deepseek-cloud` |
+| `K8S_OVERLAY` | `local` | `local` (kind or k3s), `cloud`, `deepseek-local`, `deepseek-cloud` |
+| `K8S_DISTRO` | `kind` | Local cluster: `kind`, or `k3s` for a small server (see [Small servers](#small-servers-k3s-and-external-embeddings)) |
 | `K8S_NAMESPACE` | `rag` | Namespace of every object |
-| `K8S_CLUSTER` | `rag` | kind cluster name |
-| `K8S_HOST_PORT` | `8081` | kind: entry point on localhost |
+| `K8S_CLUSTER` | `rag` | Local cluster name |
+| `K8S_HOST_PORT` | `8081` | Local cluster: entry point on localhost |
+| `K8S_API_PORT` | `6550` | k3s: API server on `127.0.0.1` |
 | `K8S_IMAGE` | `genric-rag-app:local` | Application image; in the cloud, the one pushed to your registry |
-| `DOCS_HOST_PATH` | `./documents` | kind: folder mounted read-only into the node when the cluster is created |
+| `DOCS_HOST_PATH` | `./documents` | Local cluster: folder mounted read-only into the node when the cluster is created |
+| `K8S_NODE_CPUS` / `K8S_NODE_MEMORY` | none | Docker limits of the local node (memory without swap), e.g. `2` / `2g`: a small server on a bigger machine. Applied on every `up`; to remove them, recreate the cluster |
+| `K8S_EMBEDDINGS_URL` | none | Embeddings served outside the cluster (`embeddings-host.sh`); the in-cluster TEI is not deployed |
 | `GPU` | `none` (`auto` = `none`) | `nvidia`: Ollama and embeddings on GPU (`TEI_GPU_IMAGE` picks the TEI tag); `amd`: Ollama with ROCm |
 | `K8S_CONFIG_FROM_ENV` | `true` | `false` applies the manifests' values only |
 | `K8S_EMBEDDINGS_CPU` / `K8S_EMBEDDINGS_CPU_LIMIT` / `K8S_EMBEDDINGS_MEMORY` | overlay | Size of the embeddings pod for a small node (the `local` overlay asks for 4 CPU, which a 4 vCPU machine cannot give besides Kubernetes itself), e.g. `1500m` / `3` / `5Gi`; `RAYON_NUM_THREADS` follows the CPU limit |
@@ -108,6 +113,33 @@ Useful commands:
 kubectl -n rag get hpa
 ./deploy/k8s/scripts/kind-down.sh       # delete the whole local cluster, data included
 ```
+
+## Small servers: k3s and external embeddings
+
+Two settings, independent of each other, for servers smaller than the 4 CPU / 8 GB the base manifests need:
+
+- **`K8S_DISTRO=k3s`** runs the local cluster with k3s instead of kind, also in one Docker container
+  (`k3s-<cluster>`, image `K3S_IMAGE`, default `rancher/k3s:v1.36.5-k3s1`). Its control plane is a single
+  process with SQLite instead of etcd and ships metrics-server, so it leaves more of the node to the
+  application. The same commands apply (`./scripts/deploy.sh up/down/status`); `k3s-down.sh` deletes it.
+  Its kubectl context is `k3s-<cluster>` (kind's is `kind-<cluster>`).
+- **`K8S_EMBEDDINGS_URL`** moves the embeddings model, the largest piece (~2.5 GB of RAM for
+  `Qwen3-Embedding-0.6B`), to another machine. There, `embeddings-host.sh up` runs the same TEI image and
+  model with plain Docker; the cluster stops deploying its own and uses that URL. With the same
+  `EMBEDDING_MODEL` the index does not change, so a restored backup keeps working.
+
+```bash
+# Embeddings machine (EMBEDDING_MODEL as in the cluster's .env); private address only: TEI has no authentication
+EMBEDDINGS_BIND=10.0.0.5 EMBEDDINGS_PORT=8090 ./deploy/k8s/scripts/embeddings-host.sh up
+
+# Cluster machine, .env: DEPLOY_MODE=k8s, K8S_DISTRO=k3s, K8S_EMBEDDINGS_URL=http://10.0.0.5:8090
+./scripts/deploy.sh up
+```
+
+`K8S_NODE_CPUS` / `K8S_NODE_MEMORY` (and `EMBEDDINGS_CPUS` / `EMBEDDINGS_MEMORY_LIMIT` for
+`embeddings-host.sh`) cap the Docker containers, to try a server size on a bigger machine before paying for it.
+The limits do not change what Kubernetes believes the node has (it still sees the machine): compare the sum
+of the pods' requests (`kubectl describe node`) with the real server, too.
 
 ## Cloud cluster
 

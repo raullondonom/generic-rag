@@ -48,6 +48,7 @@ echo "Creating kind cluster '$CLUSTER' (documents: $DOCS_DIR)..."
 kind create cluster --config "$tmp/kind.yaml"
 kubectl config use-context "kind-$CLUSTER" >/dev/null
 kubectl cluster-info
+limit_local_nodes
 
 echo "Installing metrics-server (needed by the HPAs)..."
 kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml >/dev/null

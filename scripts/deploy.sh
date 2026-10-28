@@ -2,7 +2,7 @@
 # Starts, stops or shows the deployment chosen in .env with DEPLOY_MODE:
 #   mini  docker-compose.yml: one of everything (also plain `docker compose up -d`)
 #   ha    docker-compose.yml + docker-compose.ha.yml: nginx, 2 APIs, queue, workers, 3 Qdrant, 2-3 embeddings
-#   k8s   deploy/k8s: a local kind cluster or a managed one (K8S_OVERLAY)
+#   k8s   deploy/k8s: a local kind or k3s cluster (K8S_DISTRO) or a managed one (K8S_OVERLAY)
 # GPU (auto | nvidia | amd | none) applies to the three.
 #
 #   ./scripts/deploy.sh up               # start (build, create the kind cluster if needed)
@@ -140,35 +140,36 @@ k8s_mode() {
       esac
       ;;
     up)
-      if is_kind_overlay; then
-        if ! kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
-          "$scripts/kind-up.sh"
+      if is_local_overlay; then
+        if ! local_cluster_exists; then
+          "$scripts/$DISTRO-up.sh"
         else
           # A cluster stopped by `down`: start its node containers again
           local node stopped=0
-          for node in $(kind get nodes --name "$CLUSTER"); do
+          for node in $(local_nodes); do
             if [ "$(docker inspect -f '{{.State.Running}}' "$node")" != true ]; then docker start "$node" >/dev/null; stopped=1; fi
           done
           if [ "$stopped" = 1 ]; then
-            echo "Starting kind cluster '$CLUSTER' again..."
+            echo "Starting $DISTRO cluster '$CLUSTER' again..."
             # Right after `docker start` the API server refuses connections for a few seconds, and
             # `kubectl wait` fails at once instead of waiting
             local i
             for i in $(seq 1 60); do
-              kubectl --context "kind-$CLUSTER" get --raw /readyz >/dev/null 2>&1 && break
+              kubectl --context "$KUBE_CONTEXT" get --raw /readyz >/dev/null 2>&1 && break
               sleep 2
             done
-            kubectl --context "kind-$CLUSTER" wait --for=condition=Ready node --all --timeout=180s >/dev/null
+            kubectl --context "$KUBE_CONTEXT" wait --for=condition=Ready node --all --timeout=180s >/dev/null
           fi
+          limit_local_nodes
         fi
-        kubectl config use-context "kind-$CLUSTER" >/dev/null
+        kubectl config use-context "$KUBE_CONTEXT" >/dev/null
       fi
       "$scripts/deploy.sh" "$@"
       ;;
     down)
-      if is_kind_overlay; then
-        echo "Stopping kind cluster '$CLUSTER' (its data stays; ./deploy/k8s/scripts/kind-down.sh deletes it)."
-        docker stop $(kind get nodes --name "$CLUSTER") >/dev/null
+      if is_local_overlay; then
+        echo "Stopping $DISTRO cluster '$CLUSTER' (its data stays; ./deploy/k8s/scripts/$DISTRO-down.sh deletes it)."
+        docker stop $(local_nodes) >/dev/null
       else
         echo "Scaling namespace '$NAMESPACE' to zero (the volumes stay; ./scripts/deploy.sh up starts it again)."
         kubectl -n "$NAMESPACE" scale deployment --all --replicas=0

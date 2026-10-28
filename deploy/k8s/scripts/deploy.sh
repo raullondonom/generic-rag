@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Builds the application image (optional), loads it into kind and applies the Kubernetes manifests.
+# Builds the application image (optional), loads it into the local cluster (kind or k3s) and applies the
+# Kubernetes manifests.
 # Works with a cloud cluster too (K8S_OVERLAY=cloud, BUILD=0). The settings come from .env (see env.sh):
 #
 #   ./deploy/k8s/scripts/deploy.sh                       # overlay and namespace from .env (default local, rag)
@@ -44,13 +45,15 @@ if [ "$CONFIG_FROM_ENV" = true ] && [ -f "$ENV_FILE" ]; then
   done
 fi
 overrides=${#data[@]}
+# Embeddings outside the cluster (K8S_EMBEDDINGS_URL): the in-cluster TEI is removed below
+[ -n "$EMBEDDINGS_URL" ] && data+=("  EMBEDDING_URL: \"$EMBEDDINGS_URL\"")
 {
   echo "apiVersion: v1"
   echo "kind: ConfigMap"
   echo "metadata:"
   echo "  name: rag-config"
   # An empty "data:" is null, and a null in a strategic merge patch deletes the whole field
-  if [ "$overrides" -gt 0 ]; then echo "data:"; printf '%s\n' "${data[@]}"; else echo "data: {}"; fi
+  if [ ${#data[@]} -gt 0 ]; then echo "data:"; printf '%s\n' "${data[@]}"; else echo "data: {}"; fi
 } > "$GEN/config-from-env.yaml"
 
 # Size of the embeddings pod, for nodes smaller than the overlays assume (local asks for 4 CPU): its CPU
@@ -96,12 +99,19 @@ emb_mem="$(setting EMBEDDINGS_MEMORY K8S_EMBEDDINGS_MEMORY "")"
       }
       ;;
   esac
-  if [ -n "$emb_cpu$emb_cpu_limit$emb_mem" ]; then
+  if [ -n "$EMBEDDINGS_URL" ]; then
+    echo "  - path: no-embeddings.yaml"
+  elif [ -n "$emb_cpu$emb_cpu_limit$emb_mem" ]; then
     echo "  - path: embeddings-resources.yaml"
     echo "    target: {kind: Deployment, name: embeddings}"
   fi
 } > "$GEN/kustomization.yaml"
-if [ -n "$emb_cpu$emb_cpu_limit$emb_mem" ]; then
+if [ -n "$EMBEDDINGS_URL" ]; then
+  for object in "apps/v1 Deployment embeddings" "v1 Service embeddings" "v1 PersistentVolumeClaim hf-models"; do
+    read -r api_version object_kind name <<< "$object"
+    printf -- '---\napiVersion: %s\nkind: %s\nmetadata:\n  name: %s\n$patch: delete\n' "$api_version" "$object_kind" "$name"
+  done > "$GEN/no-embeddings.yaml"
+elif [ -n "$emb_cpu$emb_cpu_limit$emb_mem" ]; then
   {
     printf 'apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: embeddings\nspec:\n  template:\n    spec:\n'
     printf '      containers:\n        - name: tei\n          resources:\n'
@@ -124,6 +134,7 @@ case "$GPU" in
   amd) gpu_patch ollama-gpu-amd.patch.yaml ollama ;;
 esac
 echo "Overlay '$OVERLAY' in namespace '$NAMESPACE', image $image_name:$image_tag, GPU $GPU, $overrides setting(s) from .env"
+[ -z "$EMBEDDINGS_URL" ] || echo "Embeddings outside the cluster: $EMBEDDINGS_URL"
 
 # RENDER_ONLY=1: print what would be applied and stop (no build, no cluster needed)
 if [ "${RENDER_ONLY:-0}" = 1 ]; then
@@ -137,27 +148,32 @@ if [ "$BUILD" = 1 ]; then
   docker build -t "$IMAGE" "$REPO_ROOT/app"
 fi
 
-# kind load fails with Docker Desktop's containerd image store when an image index lists platforms that
-# are not on disk ("content digest ... not found"): import only the node's platform instead.
+# The images go into the containerd of every node. kind load fails with Docker Desktop's containerd image
+# store when an image index lists platforms that are not on disk ("content digest ... not found"): import
+# only the node's platform instead. k3s has no loader: the same import, the whole image first.
+import_image() {  # import_image <image> <node> [docker save options]
+  docker save "${@:3}" "$1" \
+    | docker exec -i "$2" ctr --namespace=k8s.io images import --snapshotter=overlayfs - >/dev/null
+}
 load_image() {
-  if kind load docker-image "$1" --name "$CLUSTER" >/dev/null 2>&1; then return 0; fi
+  if [ "$DISTRO" = kind ] && kind load docker-image "$1" --name "$CLUSTER" >/dev/null 2>&1; then return 0; fi
   local platform="linux/$(docker version --format '{{.Server.Arch}}')"
   local node
-  for node in $(kind get nodes --name "$CLUSTER"); do
-    docker save --platform "$platform" "$1" \
-      | docker exec -i "$node" ctr --namespace=k8s.io images import --snapshotter=overlayfs - >/dev/null
+  for node in $(local_nodes); do
+    if [ "$DISTRO" = k3s ] && import_image "$1" "$node" 2>/dev/null; then continue; fi
+    import_image "$1" "$node" --platform "$platform"
   done
 }
 
-if command -v kind >/dev/null 2>&1 && kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
-  echo "Loading images into kind cluster '$CLUSTER'..."
+if local_cluster_exists; then
+  echo "Loading images into $DISTRO cluster '$CLUSTER'..."
   images=(
     "$IMAGE"
     postgres:18.4-alpine
     qdrant/qdrant:v1.19.2
-    ghcr.io/huggingface/text-embeddings-inference:cpu-1.9
     nginx:1.28-alpine
   )
+  [ -n "$EMBEDDINGS_URL" ] || images+=(ghcr.io/huggingface/text-embeddings-inference:cpu-1.9)
   case "$OVERLAY" in
     deepseek-*) ;;  # no local model
     *) images+=(ollama/ollama:0.40.5) ;;
@@ -193,6 +209,13 @@ case "$OVERLAY" in
       --ignore-not-found >/dev/null
     ;;
 esac
+# The same for the in-cluster embeddings when they are served elsewhere (the model cache goes with them)
+embeddings=(deployment/embeddings)
+if [ -n "$EMBEDDINGS_URL" ]; then
+  kubectl -n "$NAMESPACE" delete deployment/embeddings service/embeddings pvc/hf-models \
+    --ignore-not-found >/dev/null
+  embeddings=()
+fi
 
 kubectl apply -k "$GEN"
 
@@ -201,13 +224,13 @@ kubectl apply -k "$GEN"
 #   RESTART=1 ./deploy/k8s/scripts/deploy.sh
 if [ "${RESTART:-0}" = 1 ]; then
   kubectl -n "$NAMESPACE" rollout restart \
-    deployment/api deployment/scheduler deployment/embeddings deployment/nginx >/dev/null
+    deployment/api deployment/scheduler ${embeddings[@]+"${embeddings[@]}"} deployment/nginx >/dev/null
 fi
 
 for target in \
   statefulset/postgres \
   statefulset/qdrant \
-  deployment/embeddings \
+  ${embeddings[@]+"${embeddings[@]}"} \
   deployment/api \
   deployment/scheduler \
   deployment/nginx; do
@@ -228,7 +251,7 @@ fi
 
 echo
 kubectl -n "$NAMESPACE" get pods
-if is_kind_overlay; then
+if is_local_overlay; then
   echo
   echo "Entry point: $BASE_URL"
 fi

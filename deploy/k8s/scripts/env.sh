@@ -1,13 +1,19 @@
 # Settings shared by the Kubernetes scripts (sourced, not run). Each one comes from the environment, then from
 # the repository's .env, then from a neutral default, so one .env drives Docker Compose and Kubernetes alike.
 #
-#   K8S_CLUSTER    kind cluster name                     (default rag)
+#   K8S_DISTRO     local cluster: kind | k3s (k3s in one Docker container, lighter) (default kind)
+#   K8S_CLUSTER    local cluster name                    (default rag)
 #   K8S_NAMESPACE  namespace of the deployment           (default rag)
 #   K8S_OVERLAY    local | cloud | deepseek-local | deepseek-cloud (default local)
-#   K8S_HOST_PORT  kind: entry point on localhost        (default 8081)
+#   K8S_HOST_PORT  local cluster: entry point on localhost (default 8081)
+#   K8S_API_PORT   k3s: API server on 127.0.0.1           (default 6550)
 #   K8S_IMAGE      application image                     (default genric-rag-app:local)
-#   DOCS_HOST_PATH documents mounted into a kind cluster (default ./documents, as in Docker Compose)
+#   DOCS_HOST_PATH documents mounted into a local cluster (default ./documents, as in Docker Compose)
 #   GPU            nvidia | amd | none (auto means none: the GPU of a cluster is not detected from here)
+#   K8S_NODE_CPUS / K8S_NODE_MEMORY  optional Docker limits of the local node, e.g. 2 / 2g (no swap): a
+#                  small server on a bigger machine
+#   K8S_EMBEDDINGS_URL  embeddings served outside the cluster (embeddings-host.sh), e.g.
+#                  http://10.0.0.5:8090; empty runs them inside the cluster
 
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 ENV_FILE="${ENV_FILE:-$REPO_ROOT/.env}"
@@ -47,6 +53,41 @@ esac
 GPU="$(setting GPU GPU none)"
 [ "$GPU" = auto ] && GPU=none
 
-is_kind_overlay() {
+DISTRO="$(setting K8S_DISTRO K8S_DISTRO kind)"
+case "$DISTRO" in
+  kind|k3s) ;;
+  *) echo "K8S_DISTRO must be kind or k3s (got '$DISTRO')" >&2; exit 1 ;;
+esac
+API_PORT="$(setting K8S_API_PORT K8S_API_PORT 6550)"
+NODE_CPUS="$(setting NODE_CPUS K8S_NODE_CPUS "")"
+NODE_MEMORY="$(setting NODE_MEMORY K8S_NODE_MEMORY "")"
+EMBEDDINGS_URL="$(setting EMBEDDINGS_URL K8S_EMBEDDINGS_URL "")"
+KUBE_CONTEXT="$DISTRO-$CLUSTER"
+
+is_local_overlay() {
   case "$OVERLAY" in local|deepseek-local) return 0 ;; *) return 1 ;; esac
+}
+
+# Docker containers of the local cluster's nodes (none when it does not exist)
+local_nodes() {
+  if [ "$DISTRO" = k3s ]; then
+    docker ps -a --filter "name=^k3s-$CLUSTER\$" --format '{{.Names}}'
+  elif command -v kind >/dev/null 2>&1; then
+    kind get nodes --name "$CLUSTER" 2>/dev/null
+  fi
+}
+
+local_cluster_exists() { [ -n "$(local_nodes)" ]; }
+
+# K8S_NODE_CPUS / K8S_NODE_MEMORY on the node containers (memory without swap, like a server without it).
+# Applied on every `up`; to remove a limit, recreate the cluster.
+limit_local_nodes() {
+  [ -n "$NODE_CPUS$NODE_MEMORY" ] || return 0
+  local args=() node
+  [ -n "$NODE_CPUS" ] && args+=(--cpus "$NODE_CPUS")
+  [ -n "$NODE_MEMORY" ] && args+=(--memory "$NODE_MEMORY" --memory-swap "$NODE_MEMORY")
+  for node in $(local_nodes); do
+    docker update "${args[@]}" "$node" >/dev/null
+  done
+  echo "Node limits: CPU ${NODE_CPUS:-unlimited}, memory ${NODE_MEMORY:-unlimited}"
 }
